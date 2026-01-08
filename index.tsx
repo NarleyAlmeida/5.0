@@ -109,10 +109,11 @@ type TriagemState = {
   anotacoes: string;
 };
 
-type StoredPayload = { __version: number; state: TriagemState };
+type StoredPayload = { __version: number; state: TriagemState; savedAt?: string };
+type LoadedState = { state: TriagemState; savedAt: Date | null };
 
 const STORAGE_KEY = 'triario_state_v2';
-const STORAGE_VERSION = 2;
+const STORAGE_VERSION = 3;
 
 const initialState: TriagemState = {
   tipo: '',
@@ -268,6 +269,13 @@ const parseInputDate = (value: string) => {
   if (!value) return null;
   return new Date(`${value}T00:00:00`);
 };
+const parseStoredDate = (value?: string) => {
+  if (!value) return null;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+};
+const sanitizeFilename = (value: string) =>
+  value.trim().replace(/[\\/:*?"<>|]/g, '-').replace(/\s+/g, '_');
 
 const computeTempestividade = (state: TriagemState): Tempestividade => {
   const envio = parseInputDate(state.envio);
@@ -795,12 +803,11 @@ const StepChip = ({
   </button>
 );
 
-
 const App = () => {
-  const loadState = (): TriagemState => {
+  const loadState = (): LoadedState => {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
-      if (!raw) return initialState;
+      if (!raw) return { state: initialState, savedAt: null };
       const parsed = JSON.parse(raw) as Partial<StoredPayload & TriagemState>;
       const stored = (parsed as StoredPayload).state || parsed;
       const merged: TriagemState = { ...initialState, ...(stored as Partial<TriagemState>) };
@@ -809,20 +816,24 @@ const App = () => {
         merged.parcialTipo = legacy === 'sim' ? 'COHAB Londrina' : legacy === 'não' ? 'não' : '';
       }
       if (merged.usarIntegral === undefined) merged.usarIntegral = false;
-      if (parsed && (parsed as StoredPayload).__version && (parsed as StoredPayload).__version !== STORAGE_VERSION) {
-        return merged;
-      }
-      return merged;
+      const savedAt = parseStoredDate((parsed as StoredPayload).savedAt);
+      return { state: merged, savedAt };
     } catch {
-      return initialState;
+      return { state: initialState, savedAt: null };
     }
   };
 
-  const [state, setState] = useState<TriagemState>(() => loadState());
+  const initialLoadRef = useRef<LoadedState | null>(null);
+  if (!initialLoadRef.current) {
+    initialLoadRef.current = loadState();
+  }
+  const initialLoad = initialLoadRef.current || { state: initialState, savedAt: null };
+
+  const [state, setState] = useState<TriagemState>(initialLoad.state);
   const [step, setStep] = useState(0);
   const [copied, setCopied] = useState(false);
   const [copiedCons, setCopiedCons] = useState(false);
-  const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null);
+  const [lastSavedAt, setLastSavedAt] = useState<Date | null>(initialLoad.savedAt);
   const mainRef = useRef<HTMLElement | null>(null);
 
   const outputs = useMemo(() => computeOutputs(state), [state]);
@@ -844,9 +855,14 @@ const App = () => {
 
   useEffect(() => {
     try {
-      const payload: StoredPayload = { __version: STORAGE_VERSION, state };
+      const now = new Date();
+      const payload: StoredPayload = {
+        __version: STORAGE_VERSION,
+        state,
+        savedAt: now.toISOString(),
+      };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
-      setLastSavedAt(new Date());
+      setLastSavedAt(now);
     } catch {
       /* ignore */
     }
@@ -875,7 +891,8 @@ const App = () => {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `resumo-triagem-${state.sigla || 'triario'}.txt`;
+    const safeSigla = sanitizeFilename(state.sigla);
+    a.download = `resumo-triagem-${safeSigla || 'triario'}.txt`;
     a.click();
     URL.revokeObjectURL(url);
   };
