@@ -32,7 +32,7 @@ type Subscritor =
   | '';
 type Contrarrazoes = 'apresentadas' | 'ausente alguma' | 'ausentes' | '';
 type MPTeor = 'mera ciência' | 'pela admissão' | 'pela inadmissão' | 'ausência de interesse' | '';
-type CamaraArea = 'Cível' | 'Crime' | 'ECA' | '';
+type CamaraArea = 'Cível' | 'Crime' | '';
 type ParcialOpcao = '' | 'não' | 'JG parcial' | 'COHAB Londrina' | 'outros';
 
 type TriagemState = {
@@ -68,18 +68,18 @@ type TriagemState = {
     | 'ausente'
     | '';
   apos16: YesNo;
-  guiast: string;
-  compst: string;
+  grumov: string;
+  grumovComp: string;
   valorst: string;
   guiavinc: YesNo;
   guia: YesNo;
-  guiamov: string;
+  funjusmov: string;
   guiorig: YesNo;
   comp: YesNo;
-  compmov: string;
   comptipo: 'de pagamento' | 'de agendamento' | '';
   codbar: 'confere' | 'diverge ou guia ausente' | '';
   valorfj: string;
+  funjusObs: string;
   parcialTipo: ParcialOpcao;
   parcialOutro: string;
   usarIntegral: boolean;
@@ -129,7 +129,7 @@ const initialState: TriagemState = {
   camaraNumero: '',
   emaberto: '',
   envio: '',
-  consulta: '',
+  consulta: 'não',
   leitura: '',
   emdobro: '',
   multa: '',
@@ -143,18 +143,18 @@ const initialState: TriagemState = {
   atoincomp: '',
   comprova: '',
   apos16: '',
-  guiast: '',
-  compst: '',
+  grumov: '',
+  grumovComp: '',
   valorst: '',
   guiavinc: '',
   guia: '',
-  guiamov: '',
   guiorig: '',
   comp: '',
-  compmov: '',
+  funjusmov: '',
   comptipo: '',
   codbar: '',
   valorfj: '',
+  funjusObs: '',
   parcialTipo: '',
   parcialOutro: '',
   usarIntegral: false,
@@ -224,6 +224,7 @@ const isBusinessDay = (date: Date) => {
   if (day === 0 || day === 6) return false;
   return !isHoliday(date);
 };
+const isCountableDay = (date: Date) => isBusinessDay(date) && !isProrrogacao(date);
 
 const nextBusinessDay = (date: Date) => {
   let current = toBusinessDate(date);
@@ -289,20 +290,17 @@ const computeTempestividade = (state: TriagemState): Tempestividade => {
   const intimBase = leitura && leitura <= auto ? leitura : auto;
   const intim = nextBusinessDay(intimBase);
   let comeco = addDays(intim, 1);
-  while (!isBusinessDay(comeco) || isProrrogacao(comeco)) {
+  while (!isCountableDay(comeco)) {
     comeco = addDays(comeco, 1);
   }
   let venc = comeco;
   const contagem: Date[] = [venc];
   while (contagem.length < prazo) {
     venc = addDays(venc, 1);
-    while (!isBusinessDay(venc)) {
+    while (!isCountableDay(venc)) {
       venc = addDays(venc, 1);
     }
     contagem.push(venc);
-  }
-  while (isProrrogacao(venc) || !isBusinessDay(venc)) {
-    venc = addDays(venc, 1);
   }
   const status = interp <= venc ? 'tempestivo' : 'intempestivo';
   return { status, intim, comeco, venc, prazo };
@@ -328,6 +326,14 @@ type Outputs = {
 
 const buildResumoText = (state: TriagemState, outputs: Outputs) => {
   const safe = (v: string) => (v ? v : '—');
+  const valorFJValue = state.valorfj.trim();
+  const valorFJNum = Number(valorFJValue || 0);
+  const funjusBelow =
+    state.dispensa === 'não' &&
+    state.gratuidade === 'não invocada' &&
+    valorFJValue !== '' &&
+    Number.isFinite(valorFJNum) &&
+    valorFJNum < outputs.deverFJ;
   const lines: string[] = [
     'Resumo - Portal de Triagem',
     `Data: ${new Date().toLocaleString('pt-BR')}`,
@@ -347,7 +353,7 @@ const buildResumoText = (state: TriagemState, outputs: Outputs) => {
     `GRU: ${outputs.grout}`,
     `Funjus: ${outputs.funjout}`,
     `Pagamento parcial: ${outputs.parcialout}`,
-    `Valores devidos - Tribunal Superior: ${formatCurrency(outputs.deverST)} | Funjus: ${formatCurrency(
+    `Valores devidos - ${outputs.stLabel}: ${formatCurrency(outputs.deverST)} | FUNJUS: ${formatCurrency(
       outputs.deverFJ
     )}`,
     `Base de custas: ${outputs.stLabel} ${formatIsoDate(outputs.stRateStart)} | FUNJUS ${formatIsoDate(
@@ -364,6 +370,9 @@ const buildResumoText = (state: TriagemState, outputs: Outputs) => {
   if (outputs.observacoes.length) {
     lines.push('', 'Observações/Minutas:');
     outputs.observacoes.forEach((obs, idx) => lines.push(`${idx + 1}. ${obs}`));
+  }
+  if (funjusBelow && state.funjusObs.trim()) {
+    lines.push('', `Justificativa Funjus: ${state.funjusObs.trim()}`);
   }
   if (state.anotacoes.trim()) {
     lines.push('', 'Notas manuais:', state.anotacoes.trim());
@@ -392,7 +401,7 @@ const computeOutputs = (state: TriagemState): Outputs => {
   const tempest = computeTempestividade(state);
   const interpDate = parseInputDate(state.interp);
   const stLabel =
-    state.tipo === 'Especial' ? 'STJ' : state.tipo === 'Extraordinário' ? 'STF' : 'Tribunal Superior';
+    state.tipo === 'Especial' ? 'STJ' : state.tipo === 'Extraordinário' ? 'STF' : 'STJ/STF';
   const stRate =
     state.tipo === 'Especial'
       ? pickRateInfo(interpDate, stjRatesSorted)
@@ -402,6 +411,7 @@ const computeOutputs = (state: TriagemState): Outputs => {
   const funjusRate = pickRateInfo(interpDate, funjusRatesSorted);
   const deverST = stRate.value;
   const deverFJ = funjusRate.value;
+  const gratuidadeOutput = buildGratuidadeOutput(state);
 
   const controut = (() => {
     if (state.contrarra === 'apresentadas') {
@@ -429,18 +439,19 @@ const computeOutputs = (state: TriagemState): Outputs => {
   })();
 
   const grout = (() => {
-    const shared = buildGratuidadeOutput(state);
-    if (shared) return shared;
-    const guiaInfo = state.guiast ? `guia mov. ${state.guiast}` : 'guia não localizada';
-    const compInfo = state.compst ? `comprovante mov. ${state.compst}` : 'comprovante não localizado';
-    return `${guiaInfo}; ${compInfo}`;
+    if (gratuidadeOutput) return gratuidadeOutput;
+    const guiaMov = state.grumov?.trim();
+    const compMov = state.grumovComp?.trim();
+    if (guiaMov && compMov && guiaMov !== compMov) {
+      return `GRU guia mov. ${guiaMov}; comprovante mov. ${compMov}`;
+    }
+    return guiaMov || compMov ? `GRU mov. ${guiaMov || compMov}` : 'GRU não localizada';
   })();
 
   const funjout = (() => {
-    const shared = buildGratuidadeOutput(state);
-    if (shared) return shared;
-    const guiaInfo = state.guia === 'sim' ? `guia mov. ${state.guiamov || '?'}` : 'guia não localizada';
-    const compInfo = state.comp === 'sim' ? `comprovante mov. ${state.compmov || '?'}` : 'comprovante não localizado';
+    if (gratuidadeOutput) return gratuidadeOutput;
+    const guiaInfo = state.guia === 'sim' ? `guia mov. ${state.funjusmov || '?'}` : 'guia não localizada';
+    const compInfo = state.comp === 'sim' ? `comprovante mov. ${state.funjusmov || '?'}` : 'comprovante não localizado';
     return `${guiaInfo}; ${compInfo}`;
   })();
 
@@ -478,6 +489,67 @@ const computeOutputs = (state: TriagemState): Outputs => {
   })();
 
   const observacoes: string[] = [];
+  const custasDispensadas = Boolean(gratuidadeOutput);
+  const prazoEmDobroDevido =
+    state.dispensa === 'sim' ||
+    state.gratuidade === 'presumida (defensor público, dativo ou NPJ)' ||
+    state.subscritor === 'procurador nomeado' ||
+    state.subscritor === 'procurador público';
+  const prazoEmDobroInvalido = state.emdobro === 'em dobro' && !prazoEmDobroDevido;
+  const prazoEmDobroAusente = prazoEmDobroDevido && state.emdobro !== 'em dobro';
+
+  const envioDate = parseInputDate(state.envio);
+  const leituraDate = state.consulta === 'sim' ? parseInputDate(state.leitura) : null;
+  if (envioDate && leituraDate) {
+    const auto = addDays(envioDate, 10);
+    if (leituraDate > auto) {
+      observacoes.push('Leitura após 10 dias: considerar intimação automática.');
+    }
+  }
+
+  if (state.decrec === 'monocrática/singular') {
+    observacoes.push('Decisão monocrática: REsp/RExt incabível (nulidade).');
+  }
+  if (state.acordo === 'sim') {
+    if (state.valido === 'sim') {
+      observacoes.push('Acordo válido: encerrar o processo sem análise do mérito.');
+    } else if (state.valido === 'não') {
+      observacoes.push('Acordo inválido: verificar poderes expressamente outorgados e partes.');
+    }
+  }
+  if (state.desist === 'sim') {
+    if (state.valida === 'sim') {
+      observacoes.push('Desistência válida: encerrar o processo sem análise do mérito.');
+    } else if (state.valida === 'não') {
+      observacoes.push('Desistência inválida: verificar poderes expressamente outorgados e partes.');
+    }
+  }
+  if (prazoEmDobroInvalido) {
+    observacoes.push('Prazo em dobro: apenas MP/Defensoria/NPJ/dativo.');
+  } else if (prazoEmDobroAusente) {
+    observacoes.push('Prazo em dobro aplicável (MP/Defensoria/NPJ/dativo/ente público).');
+  }
+  if (state.emaberto !== 'sim' && state.contrarra && state.contrarra !== 'ausentes' && !state.contramovis.trim()) {
+    observacoes.push('Informar movimento da juntada das contrarrazões/renúncia.');
+  }
+  if (!custasDispensadas && state.gratuidade === 'não invocada' && state.comprova && state.comprova !== 'ausente') {
+    if (!state.grumov) {
+      observacoes.push('Informar movimento da GRU (guia/comprovante).');
+    }
+  }
+  if (!custasDispensadas && state.guia === 'sim') {
+    if (state.guiorig === 'não') {
+      observacoes.push('Guia FUNJUS não é original do recurso; verificar reutilização.');
+    } else if (state.guiorig === '') {
+      observacoes.push('Informar se a guia FUNJUS é original do recurso.');
+    }
+  }
+  if (!custasDispensadas && state.comp === 'sim' && state.codbar === 'diverge ou guia ausente') {
+    observacoes.push('Código de barras divergente/guia ausente: conferir preparo FUNJUS.');
+  }
+  if (!custasDispensadas && state.comp === 'sim' && state.comptipo === 'de agendamento') {
+    observacoes.push('Comprovante de agendamento não comprova pagamento; exigir comprovante.');
+  }
   if (state.emaberto === 'sim') {
     observacoes.push(
       'Há prazo em aberto na Câmara de origem; sugere-se devolver para aguardar decurso.'
@@ -518,7 +590,7 @@ const computeOutputs = (state: TriagemState): Outputs => {
 
   if (recodobro && (deverST || deverFJ)) {
     observacoes.push(
-      `Caso de recolhimento em dobro; intimar para regularizar. Valores: Tribunal Superior ${formatCurrency(
+      `Caso de recolhimento em dobro; intimar para regularizar. Valores: ${stLabel} ${formatCurrency(
         deverST * 2
       )}, FUNJUS ${formatCurrency(deverFJ * 2)}`
     );
@@ -528,7 +600,7 @@ const computeOutputs = (state: TriagemState): Outputs => {
     state.atoincomp === 'sim'
   ) {
     observacoes.push(
-      `Ato incompatível com justiça gratuita; intimar para recolher preparo. Valores: Tribunal Superior ${formatCurrency(
+      `Ato incompatível com justiça gratuita; intimar para recolher preparo. Valores: ${stLabel} ${formatCurrency(
         deverST
       )}, FUNJUS ${formatCurrency(deverFJ)}`
     );
@@ -538,7 +610,7 @@ const computeOutputs = (state: TriagemState): Outputs => {
     (valorSTNum < deverST || valorFJNum < deverFJ)
   ) {
     const parts = [];
-    if (valorSTNum < deverST) parts.push(`Tribunal Superior ${formatCurrency(deverST - valorSTNum)}`);
+    if (valorSTNum < deverST) parts.push(`${stLabel} ${formatCurrency(deverST - valorSTNum)}`);
     if (valorFJNum < deverFJ) parts.push(`Funjus ${formatCurrency(deverFJ - valorFJNum)}`);
     if (parts.length) {
       observacoes.push(`Complementar preparo: ${parts.join(' | ')}`);
@@ -586,7 +658,7 @@ const camaraLabel = (state: TriagemState) => {
 const buildConsequencias = (state: TriagemState, outputs: Outputs) => {
   const list: string[] = [
     `Tempestividade: ${outputs.tempest.status === 'tempestivo' ? 'prazo ok' : outputs.tempest.status === 'intempestivo' ? 'avaliar intempestividade' : 'preencha datas'}`,
-    `Preparo (ST/FJ): ${outputs.grout}`,
+    `Preparo (${outputs.stLabel}/FUNJUS): ${outputs.grout}`,
     `Funjus: ${outputs.funjout}`,
     `Pagamento parcial: ${outputs.parcialout}`,
     `Contrarrazões: ${outputs.controut}`,
@@ -636,26 +708,53 @@ const computeFieldErrors = (state: TriagemState, outputs: Outputs): FieldErrors 
   mark('multa', state.multa === '');
   if (state.multa === 'sim, não recolhida') mark('motivo', !state.motivo);
   mark('dispensa', state.dispensa === '');
-  mark('gratuidade', state.gratuidade === '');
-  if (state.gratuidade === 'já é ou afirma ser beneficiário') {
-    mark('deferida', state.deferida === '');
-    if (state.deferida === 'sim') mark('movdef', !state.movdef);
-    if (state.deferida === 'não') {
-      mark('requerida', state.requerida === '');
-      if (state.requerida === 'sim') mark('movped', !state.movped);
+  if (state.dispensa === 'não') {
+    mark('gratuidade', state.gratuidade === '');
+    if (state.gratuidade === 'já é ou afirma ser beneficiário') {
+      mark('deferida', state.deferida === '');
+      if (state.deferida === 'sim') mark('movdef', !state.movdef);
+      if (state.deferida === 'não') {
+        mark('requerida', state.requerida === '');
+        if (state.requerida === 'sim') mark('movped', !state.movped);
+      }
+      mark('atoincomp', state.atoincomp === '');
     }
-    mark('atoincomp', state.atoincomp === '');
+    if (state.gratuidade === 'não invocada') {
+      mark('comprova', state.comprova === '');
+      if (state.comprova === 'no dia útil seguinte ao término do prazo') {
+        mark('apos16', state.apos16 === '');
+      }
+    }
   }
-  if (state.gratuidade === 'não invocada') {
-    mark('comprova', state.comprova === '');
-    if (state.comprova === 'no dia útil seguinte ao término do prazo') mark('apos16', state.apos16 === '');
+  if (state.guia === 'sim') {
+    mark('guiorig', state.guiorig === '');
   }
-  if (state.guia === 'sim') mark('guiamov', !state.guiamov);
+  if (state.dispensa !== 'sim' && (state.guia === 'sim' || state.comp === 'sim')) {
+    mark('funjusmov', !state.funjusmov);
+  }
+  if (
+    state.dispensa === 'não' &&
+    state.gratuidade === 'não invocada' &&
+    state.comprova &&
+    state.comprova !== 'ausente'
+  ) {
+    const guiaMov = state.grumov?.trim();
+    const compMov = state.grumovComp?.trim();
+    mark('grumov', !guiaMov && !compMov);
+  }
   if (state.comp === 'sim') {
-    mark('compmov', !state.compmov);
     mark('comptipo', !state.comptipo);
     mark('codbar', !state.codbar);
   }
+  const valorFJValue = state.valorfj.trim();
+  const valorFJNum = Number(valorFJValue || 0);
+  const funjusBelow =
+    state.dispensa === 'não' &&
+    state.gratuidade === 'não invocada' &&
+    valorFJValue !== '' &&
+    Number.isFinite(valorFJNum) &&
+    valorFJNum < outputs.deverFJ;
+  if (funjusBelow) mark('funjusObs', !state.funjusObs.trim());
 
   mark('subscritor', !state.subscritor);
   if (state.subscritor === 'procurador nomeado') mark('nomemovi', !state.nomemovi);
@@ -710,9 +809,62 @@ const steps: { id: StepId; label: string; icon: typeof FileText }[] = [
   { id: 'resumo', label: 'Resumo', icon: CheckCircle2 },
 ];
 
+const stepFields: Record<StepId, (keyof TriagemState)[]> = {
+  recurso: ['tipo', 'acordo', 'valido', 'desist', 'valida', 'sigla'],
+  dados: ['interp', 'decrec', 'camaraArea', 'camaraNumero', 'emaberto'],
+  tempest: ['envio', 'consulta', 'leitura', 'emdobro'],
+  preparo: [
+    'multa',
+    'motivo',
+    'dispensa',
+    'gratuidade',
+    'deferida',
+    'movdef',
+    'requerida',
+    'movped',
+    'atoincomp',
+    'comprova',
+    'apos16',
+    'grumov',
+    'funjusmov',
+    'guia',
+    'guiorig',
+    'comp',
+    'comptipo',
+    'codbar',
+    'funjusObs',
+  ],
+  processo: [
+    'subscritor',
+    'nomemovi',
+    'movis',
+    'cadeia',
+    'faltante',
+    'suspefeito',
+    'autuado',
+    'exclusivi',
+    'cadastrada',
+    'regular',
+    'contrarra',
+    'contramovis',
+    'intimado',
+    'intimovi',
+    'crraberto',
+    'decursocrr',
+    'semadv',
+    'emepe',
+    'mani',
+    'teormani',
+    'manimovis',
+    'decursomp',
+    'remetido',
+  ],
+  resumo: [],
+};
+
 const InputLabel = ({ label, children }: { label: string; children: React.ReactNode }) => (
   <label className="flex flex-col gap-2 text-sm font-medium text-slate-600">
-    <span>{label}</span>
+    <span className="min-h-[2.5rem] leading-tight">{label}</span>
     {children}
   </label>
 );
@@ -815,7 +967,27 @@ const App = () => {
         const legacy = (stored as any).parcial as YesNo;
         merged.parcialTipo = legacy === 'sim' ? 'COHAB Londrina' : legacy === 'não' ? 'não' : '';
       }
+      if (!merged.grumov) {
+        const legacyGuia = (stored as any)?.guiast as string | undefined;
+        const legacyComp = (stored as any)?.compst as string | undefined;
+        if (legacyGuia && legacyComp && legacyGuia !== legacyComp) {
+          merged.grumov = `${legacyGuia}; ${legacyComp}`;
+        } else {
+          merged.grumov = legacyGuia || legacyComp || '';
+        }
+      }
+      if (!merged.grumovComp) merged.grumovComp = merged.grumov || '';
+      if (!merged.funjusmov) {
+        const legacyGuia = (stored as any)?.guiamov as string | undefined;
+        const legacyComp = (stored as any)?.compmov as string | undefined;
+        if (legacyGuia && legacyComp && legacyGuia !== legacyComp) {
+          merged.funjusmov = `${legacyGuia}; ${legacyComp}`;
+        } else {
+          merged.funjusmov = legacyGuia || legacyComp || '';
+        }
+      }
       if (merged.usarIntegral === undefined) merged.usarIntegral = false;
+      if (merged.consulta === '') merged.consulta = 'não';
       const savedAt = parseStoredDate((parsed as StoredPayload).savedAt);
       return { state: merged, savedAt };
     } catch {
@@ -840,16 +1012,66 @@ const App = () => {
   const summaryText = useMemo(() => buildResumoText(state, outputs), [state, outputs]);
   const consequencias = useMemo(() => buildConsequencias(state, outputs), [state, outputs]);
   const fieldErrors = useMemo(() => computeFieldErrors(state, outputs), [state, outputs]);
+  const stepErrorCounts = useMemo(() => {
+    const counts: Record<StepId, number> = {
+      recurso: 0,
+      dados: 0,
+      tempest: 0,
+      preparo: 0,
+      processo: 0,
+      resumo: 0,
+    };
+    (Object.keys(stepFields) as StepId[]).forEach((stepId) => {
+      counts[stepId] = stepFields[stepId].reduce(
+        (total, key) => total + (fieldErrors[key] ? 1 : 0),
+        0
+      );
+    });
+    return counts;
+  }, [fieldErrors]);
+  const isPublicEntity = state.dispensa === 'sim';
+  const valorFJValue = state.valorfj.trim();
+  const valorFJNum = Number(valorFJValue || 0);
+  const funjusBelow =
+    state.dispensa === 'não' &&
+    state.gratuidade === 'não invocada' &&
+    valorFJValue !== '' &&
+    Number.isFinite(valorFJNum) &&
+    valorFJNum < outputs.deverFJ;
+  const funjusObsRequired = funjusBelow && !state.funjusObs.trim();
+  const funjusObs = state.funjusObs.trim();
+  const currentStepId = steps[step].id;
+  const currentStepErrorCount = stepErrorCounts[currentStepId] ?? 0;
 
   const handleChange = <K extends keyof TriagemState>(key: K, value: TriagemState[K]) => {
-    setState((prev) => ({ ...prev, [key]: value }));
+    setState((prev) => {
+      if (key === 'funjusmov') {
+        const nextValue = String(value);
+        const mark = nextValue.trim() ? 'sim' : '';
+        return {
+          ...prev,
+          [key]: value,
+          guia: mark,
+          comp: mark,
+        };
+      }
+      if (key === 'grumov') {
+        const nextValue = String(value);
+        const shouldMirror = !prev.grumovComp?.trim() || prev.grumovComp === prev.grumov;
+        return {
+          ...prev,
+          [key]: value,
+          grumovComp: shouldMirror ? nextValue : prev.grumovComp,
+        };
+      }
+      return { ...prev, [key]: value };
+    });
   };
 
   const inputClass = (key: keyof TriagemState, extra?: string) => {
     const value = state[key];
     const filled = typeof value === 'string' ? value.trim() !== '' : Boolean(value);
-    const hasError = Boolean(fieldErrors[key]);
-    const base = hasError ? 'input input-error' : filled ? 'input input-success' : 'input';
+    const base = filled ? 'input input-success' : 'input';
     return extra ? `${base} ${extra}` : base;
   };
 
@@ -878,6 +1100,40 @@ const App = () => {
       return { ...prev, valorst: targetValorST, valorfj: targetValorFJ };
     });
   }, [state.usarIntegral, outputs.deverST, outputs.deverFJ]);
+
+  useEffect(() => {
+    if (!isPublicEntity) return;
+    setState((prev) => {
+      if (prev.dispensa !== 'sim') return prev;
+      let changed = false;
+      const next: TriagemState = { ...prev };
+      if (next.emdobro !== 'em dobro') {
+        next.emdobro = 'em dobro';
+        changed = true;
+      }
+      if (next.subscritor !== 'procurador público') {
+        next.subscritor = 'procurador público';
+        changed = true;
+      }
+      return changed ? next : prev;
+    });
+  }, [isPublicEntity]);
+
+  useEffect(() => {
+    if (state.consulta === 'sim') return;
+    if (!state.leitura) return;
+    setState((prev) => (prev.leitura ? { ...prev, leitura: '' } : prev));
+  }, [state.consulta, state.leitura]);
+
+  useEffect(() => {
+    if (state.emdobro) return;
+    if (
+      state.gratuidade === 'presumida (defensor público, dativo ou NPJ)' ||
+      state.subscritor === 'procurador nomeado'
+    ) {
+      setState((prev) => (prev.emdobro ? prev : { ...prev, emdobro: 'em dobro' }));
+    }
+  }, [state.emdobro, state.gratuidade, state.subscritor]);
 
   useEffect(() => {
     const main = mainRef.current;
@@ -1091,12 +1347,11 @@ const App = () => {
                       <option value="">Selecione</option>
                       <option value="Cível">Cível</option>
                       <option value="Crime">Crime</option>
-                      <option value="ECA">ECA</option>
                     </select>
                   </InputLabel>
                   <InputLabel label="Número da Câmara">
                     <input
-                      className={inputClass('camaraNumero')}
+                      className={inputClass('camaraNumero', 'no-spinner')}
                       type="number"
                       min={1}
                       placeholder="Ex.: 7"
@@ -1163,6 +1418,7 @@ const App = () => {
                     <select
                       className={inputClass('emdobro')}
                       value={state.emdobro}
+                      disabled={isPublicEntity}
                       onChange={(e) => handleChange('emdobro', e.target.value as TriagemState['emdobro'])}
                     >
                       <option value="">Selecione</option>
@@ -1170,6 +1426,11 @@ const App = () => {
                       <option value="em dobro">Em dobro (30 dias)</option>
                     </select>
                   </InputLabel>
+                  {isPublicEntity && (
+                    <p className="text-xs text-slate-500">
+                      Órgão público informado: prazo em dobro aplicado automaticamente.
+                    </p>
+                  )}
                   <p className="md:col-span-2 text-xs text-slate-500">
                     Use prazo em dobro apenas para Defensoria Pública, MP, NPJ ou advogado dativo.
                   </p>
@@ -1259,307 +1520,328 @@ const App = () => {
                       <option value="não">Não</option>
                     </select>
                   </InputLabel>
-                  <InputLabel label="Justiça gratuita">
-                    <select
-                      className={inputClass('gratuidade')}
-                      value={state.gratuidade}
-                      onChange={(e) =>
-                        handleChange('gratuidade', e.target.value as TriagemState['gratuidade'])
-                      }
-                    >
-                      <option value="">Selecione</option>
-                      <option value="não invocada">Não invocada</option>
-                      <option value="já é ou afirma ser beneficiário">Já é ou afirma ser beneficiário</option>
-                      <option value="requer no recurso em análise">Requer no recurso em análise</option>
-                      <option value="é o próprio objeto do recurso">É o próprio objeto do recurso</option>
-                      <option value="presumida (defensor público, dativo ou NPJ)">
-                        Presumida (defensor público, dativo ou NPJ)
-                      </option>
-                    </select>
-                  </InputLabel>
-                  {state.gratuidade === 'já é ou afirma ser beneficiário' && (
+                  {state.dispensa === 'sim' && (
+                    <p className="text-xs text-slate-500">
+                      Dispensa informada: justiça gratuita não é necessária.
+                    </p>
+                  )}
+                  {state.dispensa === 'não' && (
                     <>
-                      <InputLabel label="Deferida expressamente?">
+                      <InputLabel label="Justiça gratuita">
                         <select
-                          className={inputClass('deferida')}
-                          value={state.deferida}
-                          onChange={(e) => handleChange('deferida', e.target.value as YesNo)}
+                          className={inputClass('gratuidade')}
+                          value={state.gratuidade}
+                          onChange={(e) =>
+                            handleChange('gratuidade', e.target.value as TriagemState['gratuidade'])
+                          }
                         >
                           <option value="">Selecione</option>
-                          <option value="sim">Sim</option>
-                          <option value="não">Não</option>
+                          <option value="não invocada">Não invocada</option>
+                          <option value="já é ou afirma ser beneficiário">Já é ou afirma ser beneficiário</option>
+                          <option value="requer no recurso em análise">Requer no recurso em análise</option>
+                          <option value="é o próprio objeto do recurso">É o próprio objeto do recurso</option>
+                          <option value="presumida (defensor público, dativo ou NPJ)">
+                            Presumida (defensor público, dativo ou NPJ)
+                          </option>
                         </select>
                       </InputLabel>
-                      {state.deferida === 'sim' && (
-                        <InputLabel label="Movimento (deferimento)">
-                          <input
-                            className={inputClass('movdef')}
-                            placeholder="Ex.: 9.1"
-                            value={state.movdef}
-                            onChange={(e) => handleChange('movdef', e.target.value)}
-                          />
-                        </InputLabel>
-                      )}
-                      {state.deferida === 'não' && (
+                      {state.gratuidade === 'já é ou afirma ser beneficiário' && (
                         <>
-                          <InputLabel label="Requerida anteriormente?">
+                          <InputLabel label="Deferida expressamente?">
                             <select
-                              className={inputClass('requerida')}
-                              value={state.requerida}
-                              onChange={(e) => handleChange('requerida', e.target.value as YesNo)}
+                              className={inputClass('deferida')}
+                              value={state.deferida}
+                              onChange={(e) => handleChange('deferida', e.target.value as YesNo)}
                             >
                               <option value="">Selecione</option>
                               <option value="sim">Sim</option>
                               <option value="não">Não</option>
                             </select>
                           </InputLabel>
-                          {state.requerida === 'sim' && (
-                            <InputLabel label="Movimento (pedido)">
+                          {state.deferida === 'sim' && (
+                            <InputLabel label="Movimento (deferimento)">
                               <input
-                                className={inputClass('movped')}
+                                className={inputClass('movdef')}
                                 placeholder="Ex.: 9.1"
-                                value={state.movped}
-                                onChange={(e) => handleChange('movped', e.target.value)}
+                                value={state.movdef}
+                                onChange={(e) => handleChange('movdef', e.target.value)}
                               />
+                            </InputLabel>
+                          )}
+                          {state.deferida === 'não' && (
+                            <>
+                              <InputLabel label="Requerida anteriormente?">
+                                <select
+                                  className={inputClass('requerida')}
+                                  value={state.requerida}
+                                  onChange={(e) => handleChange('requerida', e.target.value as YesNo)}
+                                >
+                                  <option value="">Selecione</option>
+                                  <option value="sim">Sim</option>
+                                  <option value="não">Não</option>
+                                </select>
+                              </InputLabel>
+                              {state.requerida === 'sim' && (
+                                <InputLabel label="Movimento (pedido)">
+                                  <input
+                                    className={inputClass('movped')}
+                                    placeholder="Ex.: 9.1"
+                                    value={state.movped}
+                                    onChange={(e) => handleChange('movped', e.target.value)}
+                                  />
+                                </InputLabel>
+                              )}
+                            </>
+                          )}
+                          <InputLabel label="Ato incompatível (pagamento prévio)?">
+                            <select
+                              className={inputClass('atoincomp')}
+                              value={state.atoincomp}
+                              onChange={(e) => handleChange('atoincomp', e.target.value as YesNo)}
+                            >
+                              <option value="">Selecione</option>
+                              <option value="sim">Sim</option>
+                              <option value="não">Não</option>
+                            </select>
+                          </InputLabel>
+                        </>
+                      )}
+                      {state.gratuidade === 'não invocada' && (
+                        <>
+                          <InputLabel label="Comprovação de preparo">
+                            <select
+                              className={inputClass('comprova')}
+                              value={state.comprova}
+                              onChange={(e) =>
+                                handleChange('comprova', e.target.value as TriagemState['comprova'])
+                              }
+                            >
+                              <option value="">Selecione</option>
+                              <option value="no prazo para interposição do recurso">
+                                No prazo para interposição do recurso
+                              </option>
+                              <option value="no dia útil seguinte ao término do prazo">
+                                No dia útil seguinte ao término do prazo
+                              </option>
+                              <option value="posteriormente">Posteriormente</option>
+                              <option value="ausente">Ausente</option>
+                            </select>
+                          </InputLabel>
+                          {state.comprova === 'no dia útil seguinte ao término do prazo' && (
+                            <InputLabel label="Recurso interposto no último dia, após as 16h?">
+                              <select
+                                className={inputClass('apos16')}
+                                value={state.apos16}
+                                onChange={(e) => handleChange('apos16', e.target.value as YesNo)}
+                              >
+                                <option value="">Selecione</option>
+                                <option value="sim">Sim</option>
+                                <option value="não">Não</option>
+                              </select>
                             </InputLabel>
                           )}
                         </>
                       )}
-                      <InputLabel label="Ato incompatível (pagamento prévio)?">
-                        <select
-                          className={inputClass('atoincomp')}
-                          value={state.atoincomp}
-                          onChange={(e) => handleChange('atoincomp', e.target.value as YesNo)}
-                        >
-                          <option value="">Selecione</option>
-                          <option value="sim">Sim</option>
-                          <option value="não">Não</option>
-                        </select>
-                      </InputLabel>
                     </>
                   )}
-                  {state.gratuidade === 'não invocada' && (
-                    <>
-                      <InputLabel label="Comprovação de preparo">
-                        <select
-                          className={inputClass('comprova')}
-                          value={state.comprova}
-                          onChange={(e) =>
-                            handleChange('comprova', e.target.value as TriagemState['comprova'])
-                          }
-                        >
-                          <option value="">Selecione</option>
-                          <option value="no prazo para interposição do recurso">
-                            No prazo para interposição do recurso
-                          </option>
-                          <option value="no dia útil seguinte ao término do prazo">
-                            No dia útil seguinte ao término do prazo
-                          </option>
-                          <option value="posteriormente">Posteriormente</option>
-                          <option value="ausente">Ausente</option>
-                        </select>
+                </div>
+              </SectionCard>
+              {!isPublicEntity && (
+                <SectionCard title="Documentos e valores">
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <InputLabel label="Movimento GRU (guia/comprovante)">
+                      <input
+                        className={inputClass('grumov')}
+                        placeholder="Ex.: 1.2"
+                        value={state.grumov}
+                        onChange={(e) => handleChange('grumov', e.target.value)}
+                      />
+                    </InputLabel>
+                    <InputLabel label="Movimento GRU (auto)">
+                      <input
+                        className={inputClass('grumovComp')}
+                        placeholder="Ex.: 1.2"
+                        value={state.grumovComp}
+                        onChange={(e) => handleChange('grumovComp', e.target.value)}
+                      />
+                    </InputLabel>
+                    <div className="md:col-span-2">
+                      <InputLabel label={`Valor pago ${outputs.stLabel}/FUNJUS`}>
+                        <div className="flex items-center gap-2 text-xs text-slate-600 mb-2">
+                          <input
+                            type="checkbox"
+                            className="h-4 w-4 rounded border-slate-300 accent-amber-500"
+                            checked={state.usarIntegral}
+                            onChange={(e) => handleChange('usarIntegral', e.target.checked)}
+                          />
+                          <span>Usar valor integral devido (preenche automático)</span>
+                        </div>
+                        <div className="grid gap-2">
+                          <input
+                            className={inputClass('valorst')}
+                            type="number"
+                            step="0.01"
+                            placeholder="STJ/STF"
+                            value={state.valorst}
+                            onChange={(e) => handleChange('valorst', e.target.value)}
+                          />
+                          <input
+                            className={inputClass('valorfj')}
+                            type="number"
+                            step="0.01"
+                            placeholder="Funjus"
+                            value={state.valorfj}
+                            onChange={(e) => handleChange('valorfj', e.target.value)}
+                          />
+                        </div>
                       </InputLabel>
-                      {state.comprova === 'no dia útil seguinte ao término do prazo' && (
-                        <InputLabel label="Recurso interposto no último dia, após as 16h?">
+                    </div>
+                    {funjusBelow && (
+                      <div className="md:col-span-2">
+                        <InputLabel label="Justificativa Funjus (valor abaixo do padrão)">
+                          <textarea
+                            className={inputClass('funjusObs', 'h-24 resize-none')}
+                            maxLength={400}
+                            placeholder="Descreva o motivo do valor menor."
+                            value={state.funjusObs}
+                            onChange={(e) => handleChange('funjusObs', e.target.value)}
+                          />
+                          {funjusObsRequired && (
+                            <span className="text-xs text-rose-600">Informe o motivo do valor menor.</span>
+                          )}
+                        </InputLabel>
+                      </div>
+                    )}
+                    <InputLabel label="Movimento FUNJUS (guia/comprovante)">
+                      <input
+                        className={inputClass('funjusmov')}
+                        placeholder="Ex.: 1.5"
+                        value={state.funjusmov}
+                        onChange={(e) => handleChange('funjusmov', e.target.value)}
+                      />
+                    </InputLabel>
+                    <InputLabel label="Juntou guia?">
+                      <select
+                        className={inputClass('guia')}
+                        value={state.guia}
+                        onChange={(e) => handleChange('guia', e.target.value as YesNo)}
+                      >
+                        <option value="">Selecione</option>
+                        <option value="sim">Sim</option>
+                        <option value="não">Não</option>
+                      </select>
+                    </InputLabel>
+                    {state.guia === 'sim' && (
+                      <>
+                        <InputLabel label="Guia original para o recurso?">
                           <select
-                            className={inputClass('apos16')}
-                            value={state.apos16}
-                            onChange={(e) => handleChange('apos16', e.target.value as YesNo)}
+                            className={inputClass('guiorig')}
+                            value={state.guiorig}
+                            onChange={(e) => handleChange('guiorig', e.target.value as YesNo)}
                           >
                             <option value="">Selecione</option>
                             <option value="sim">Sim</option>
                             <option value="não">Não</option>
                           </select>
                         </InputLabel>
-                      )}
-                    </>
-                  )}
-                </div>
-              </SectionCard>
-              <SectionCard title="Documentos e valores">
-                <div className="grid gap-4">
-                  <InputLabel label="Guia (Tribunal Superior) mov.">
-                    <input
-                      className={inputClass('guiast')}
-                      placeholder="Ex.: 1.2"
-                      value={state.guiast}
-                      onChange={(e) => handleChange('guiast', e.target.value)}
-                    />
-                  </InputLabel>
-                  <InputLabel label="Comprovante (Tribunal Superior) mov.">
-                    <input
-                      className={inputClass('compst')}
-                      placeholder="Ex.: 1.3"
-                      value={state.compst}
-                      onChange={(e) => handleChange('compst', e.target.value)}
-                    />
-                  </InputLabel>
-                  <div className="md:col-span-2">
-                    <InputLabel label="Valor pago ST/FJ">
-                      <div className="flex items-center gap-2 text-xs text-slate-600 mb-2">
-                        <input
-                          type="checkbox"
-                          className="h-4 w-4 rounded border-slate-300 accent-amber-500"
-                          checked={state.usarIntegral}
-                          onChange={(e) => handleChange('usarIntegral', e.target.checked)}
-                        />
-                        <span>Usar valor integral devido (preenche automático)</span>
-                      </div>
-                      <div className="grid gap-2">
-                        <input
-                          className={inputClass('valorst')}
-                          type="number"
-                          step="0.01"
-                          placeholder="STJ/STF"
-                          value={state.valorst}
-                          onChange={(e) => handleChange('valorst', e.target.value)}
-                        />
-                        <input
-                          className={inputClass('valorfj')}
-                          type="number"
-                          step="0.01"
-                          placeholder="Funjus"
-                          value={state.valorfj}
-                          onChange={(e) => handleChange('valorfj', e.target.value)}
-                        />
-                      </div>
-                    </InputLabel>
-                  </div>
-                  <InputLabel label="Juntou guia (Funjus)?">
-                    <select
-                      className={inputClass('guia')}
-                      value={state.guia}
-                      onChange={(e) => handleChange('guia', e.target.value as YesNo)}
-                    >
-                      <option value="">Selecione</option>
-                      <option value="sim">Sim</option>
-                      <option value="não">Não</option>
-                    </select>
-                  </InputLabel>
-                  {state.guia === 'sim' && (
-                    <>
-                      <InputLabel label="Movimento (guia)">
-                        <input
-                          className={inputClass('guiamov')}
-                          placeholder="Ex.: 1.4"
-                          value={state.guiamov}
-                          onChange={(e) => handleChange('guiamov', e.target.value)}
-                        />
-                      </InputLabel>
-                      <InputLabel label="Guia original para o recurso?">
-                        <select
-                          className={inputClass('guiorig')}
-                          value={state.guiorig}
-                          onChange={(e) => handleChange('guiorig', e.target.value as YesNo)}
-                        >
-                          <option value="">Selecione</option>
-                          <option value="sim">Sim</option>
-                          <option value="não">Não</option>
-                        </select>
-                      </InputLabel>
-                    </>
-                  )}
-                  <InputLabel label="Juntou comprovante?">
-                    <select
-                      className={inputClass('comp')}
-                      value={state.comp}
-                      onChange={(e) => handleChange('comp', e.target.value as YesNo)}
-                    >
-                      <option value="">Selecione</option>
-                      <option value="sim">Sim</option>
-                      <option value="não">Não</option>
-                    </select>
-                  </InputLabel>
-                  {state.comp === 'sim' && (
-                    <>
-                      <InputLabel label="Movimento (comprovante)">
-                        <input
-                          className={inputClass('compmov')}
-                          placeholder="Ex.: 1.5"
-                          value={state.compmov}
-                          onChange={(e) => handleChange('compmov', e.target.value)}
-                        />
-                      </InputLabel>
-                      <InputLabel label="Tipo de comprovante">
-                        <select
-                          className={inputClass('comptipo')}
-                          value={state.comptipo}
-                          onChange={(e) =>
-                            handleChange('comptipo', e.target.value as TriagemState['comptipo'])
-                          }
-                        >
-                          <option value="">Selecione</option>
-                          <option value="de pagamento">De pagamento</option>
-                          <option value="de agendamento">De agendamento</option>
-                        </select>
-                      </InputLabel>
-                      <InputLabel label="Código de barras">
-                        <select
-                          className={inputClass('codbar')}
-                          value={state.codbar}
-                          onChange={(e) =>
-                            handleChange('codbar', e.target.value as TriagemState['codbar'])
-                          }
-                        >
-                          <option value="">Selecione</option>
-                          <option value="confere">Confere</option>
-                          <option value="diverge ou guia ausente">Diverge ou guia ausente</option>
-                        </select>
-                      </InputLabel>
-                    </>
-                  )}
-                  <div className="md:col-span-2">
-                    <InputLabel label="COHAB LD? (parcial Funjus)">
+                      </>
+                    )}
+                    <InputLabel label="Juntou comprovante?">
                       <select
-                        className={inputClass('parcialTipo')}
-                        value={state.parcialTipo}
-                        onChange={(e) => handleChange('parcialTipo', e.target.value as ParcialOpcao)}
+                        className={inputClass('comp')}
+                        value={state.comp}
+                        onChange={(e) => handleChange('comp', e.target.value as YesNo)}
                       >
                         <option value="">Selecione</option>
+                        <option value="sim">Sim</option>
                         <option value="não">Não</option>
-                        <option value="JG parcial">JG parcial</option>
-                        <option value="COHAB Londrina">COHAB Londrina</option>
-                        <option value="outros">Outros (especificar)</option>
                       </select>
                     </InputLabel>
-                  </div>
-                  {state.parcialTipo === 'outros' && (
+                    {state.comp === 'sim' && (
+                      <>
+                        <InputLabel label="Tipo de comprovante">
+                          <select
+                            className={inputClass('comptipo')}
+                            value={state.comptipo}
+                            onChange={(e) =>
+                              handleChange('comptipo', e.target.value as TriagemState['comptipo'])
+                            }
+                          >
+                            <option value="">Selecione</option>
+                            <option value="de pagamento">De pagamento</option>
+                            <option value="de agendamento">De agendamento</option>
+                          </select>
+                        </InputLabel>
+                        <InputLabel label="Código de barras">
+                          <select
+                            className={inputClass('codbar')}
+                            value={state.codbar}
+                            onChange={(e) =>
+                              handleChange('codbar', e.target.value as TriagemState['codbar'])
+                            }
+                          >
+                            <option value="">Selecione</option>
+                            <option value="confere">Confere</option>
+                            <option value="diverge ou guia ausente">Diverge ou guia ausente</option>
+                          </select>
+                        </InputLabel>
+                      </>
+                    )}
                     <div className="md:col-span-2">
-                      <InputLabel label="Descrever pagamento parcial">
-                        <input
-                          className={inputClass('parcialOutro')}
-                          placeholder="Ex.: parcelamento, precatório, etc."
-                          value={state.parcialOutro}
-                          onChange={(e) => handleChange('parcialOutro', e.target.value)}
-                        />
+                      <InputLabel label="COHAB LD? (parcial Funjus)">
+                        <select
+                          className={inputClass('parcialTipo')}
+                          value={state.parcialTipo}
+                          onChange={(e) => handleChange('parcialTipo', e.target.value as ParcialOpcao)}
+                        >
+                          <option value="">Selecione</option>
+                          <option value="não">Não</option>
+                          <option value="JG parcial">JG parcial</option>
+                          <option value="COHAB Londrina">COHAB Londrina</option>
+                          <option value="outros">Outros (especificar)</option>
+                        </select>
                       </InputLabel>
                     </div>
+                    {state.parcialTipo === 'outros' && (
+                      <div className="md:col-span-2">
+                        <InputLabel label="Descrever pagamento parcial">
+                          <input
+                            className={inputClass('parcialOutro')}
+                            placeholder="Ex.: parcelamento, precatório, etc."
+                            value={state.parcialOutro}
+                            onChange={(e) => handleChange('parcialOutro', e.target.value)}
+                          />
+                        </InputLabel>
+                      </div>
+                    )}
+                  </div>
+                  {state.interp ? (
+                    <div className="mt-4 space-y-1 text-sm text-slate-600">
+                      <div>
+                        Valores devidos agora: {outputs.stLabel} {formatCurrency(outputs.deverST)} | FUNJUS{' '}
+                        {formatCurrency(outputs.deverFJ)}
+                      </div>
+                      <div className="text-xs text-slate-500">
+                        Base aplicada: {outputs.stLabel} {formatIsoDate(outputs.stRateStart)} | FUNJUS{' '}
+                        {formatIsoDate(outputs.fjRateStart)}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="mt-4 text-xs text-slate-500">
+                      Informe a data de interposição para calcular as custas automaticamente.
+                    </div>
                   )}
-                </div>
-                {state.interp ? (
-                  <div className="mt-4 space-y-1 text-sm text-slate-600">
-                    <div>
-                      Valores devidos agora: Tribunal Superior {formatCurrency(outputs.deverST)} | FUNJUS{' '}
-                      {formatCurrency(outputs.deverFJ)}
-                    </div>
-                    <div className="text-xs text-slate-500">
-                      Base aplicada: {outputs.stLabel} {formatIsoDate(outputs.stRateStart)} | FUNJUS{' '}
-                      {formatIsoDate(outputs.fjRateStart)}
-                    </div>
-                  </div>
-                ) : (
-                  <div className="mt-4 text-xs text-slate-500">
-                    Informe a data de interposição para calcular as custas automaticamente.
-                  </div>
-                )}
-              </SectionCard>
-              <SectionCard title="Notas práticas">
-                <ul className="space-y-2 text-sm text-slate-600">
-                  <li>• Marque “de agendamento” se o comprovante não tem autenticação.</li>
-                  <li>• Se houver ato incompatível com a gratuidade, o preparo será exigido.</li>
-                  <li>• Campos de movimento ajudam a gerar a minuta/post-it automaticamente.</li>
-                </ul>
-              </SectionCard>
+                </SectionCard>
+              )}
+              {!isPublicEntity && (
+                <SectionCard title="Notas práticas">
+                  <ul className="space-y-2 text-sm text-slate-600">
+                    <li>• Marque “de agendamento” se o comprovante não tem autenticação.</li>
+                    <li>• Se houver ato incompatível com a gratuidade, o preparo será exigido.</li>
+                    <li>• Campos de movimento ajudam a gerar a minuta/post-it automaticamente.</li>
+                  </ul>
+                </SectionCard>
+              )}
             </div>
           );
         case 'processo':
@@ -1571,69 +1853,75 @@ const App = () => {
                 </div>
               )}
               <SectionCard title="Representação">
-                <div className="grid gap-4">
-                  <InputLabel label="Subscritor">
-                    <select
-                      className={inputClass('subscritor')}
-                      value={state.subscritor}
-                      onChange={(e) => handleChange('subscritor', e.target.value as Subscritor)}
-                    >
-                      <option value="">Selecione</option>
-                      <option value="advogado particular">Advogado particular</option>
-                      <option value="procurador público">Procurador público</option>
-                      <option value="procurador nomeado">Procurador nomeado</option>
-                      <option value="advogado em causa própria">Advogado em causa própria</option>
-                    </select>
-                  </InputLabel>
-                  {state.subscritor === 'procurador nomeado' && (
-                    <InputLabel label="Movimento (nomeação)">
-                      <input
-                        className={inputClass('nomemovi')}
-                        placeholder="Ex.: 9.1"
-                        value={state.nomemovi}
-                        onChange={(e) => handleChange('nomemovi', e.target.value)}
-                      />
-                    </InputLabel>
-                  )}
-                  {state.subscritor === 'advogado particular' && (
-                    <>
-                    <InputLabel label="Movimentos (cadeia de poderes)">
-                      <input
-                        className={inputClass('movis')}
-                        placeholder="Ex.: 1.1; 9.1; via sistema"
-                        value={state.movis}
-                        onChange={(e) => handleChange('movis', e.target.value)}
-                      />
-                    </InputLabel>
-                    <InputLabel label="Cadeia completa?">
+                {isPublicEntity ? (
+                  <p className="text-sm text-slate-600">
+                    Órgão público informado: procuração dispensada.
+                  </p>
+                ) : (
+                  <div className="grid gap-4">
+                    <InputLabel label="Subscritor">
                       <select
-                        className={inputClass('cadeia')}
-                        value={state.cadeia}
-                        onChange={(e) => handleChange('cadeia', e.target.value as YesNo)}
+                        className={inputClass('subscritor')}
+                        value={state.subscritor}
+                        onChange={(e) => handleChange('subscritor', e.target.value as Subscritor)}
                       >
-                          <option value="">Selecione</option>
-                          <option value="sim">Sim</option>
-                          <option value="não">Não</option>
-                        </select>
+                        <option value="">Selecione</option>
+                        <option value="advogado particular">Advogado particular</option>
+                        <option value="procurador público">Procurador público</option>
+                        <option value="procurador nomeado">Procurador nomeado</option>
+                        <option value="advogado em causa própria">Advogado em causa própria</option>
+                      </select>
+                    </InputLabel>
+                    {state.subscritor === 'procurador nomeado' && (
+                      <InputLabel label="Movimento (nomeação)">
+                        <input
+                          className={inputClass('nomemovi')}
+                          placeholder="Ex.: 9.1"
+                          value={state.nomemovi}
+                          onChange={(e) => handleChange('nomemovi', e.target.value)}
+                        />
                       </InputLabel>
-                    {state.cadeia === 'não' && (
-                      <InputLabel label="Poderes faltantes">
+                    )}
+                    {state.subscritor === 'advogado particular' && (
+                      <>
+                      <InputLabel label="Movimentos (cadeia de poderes)">
+                        <input
+                          className={inputClass('movis')}
+                          placeholder="Ex.: 1.1; 9.1; via sistema"
+                          value={state.movis}
+                          onChange={(e) => handleChange('movis', e.target.value)}
+                        />
+                      </InputLabel>
+                      <InputLabel label="Cadeia completa?">
                         <select
-                          className={inputClass('faltante')}
-                          value={state.faltante}
-                          onChange={(e) =>
-                            handleChange('faltante', e.target.value as TriagemState['faltante'])
-                          }
-                          >
+                          className={inputClass('cadeia')}
+                          value={state.cadeia}
+                          onChange={(e) => handleChange('cadeia', e.target.value as YesNo)}
+                        >
                             <option value="">Selecione</option>
-                            <option value="ao próprio subscritor">Ao próprio subscritor</option>
-                            <option value="a outro elo da cadeia">A outro elo da cadeia</option>
+                            <option value="sim">Sim</option>
+                            <option value="não">Não</option>
                           </select>
                         </InputLabel>
-                      )}
-                    </>
-                  )}
-                </div>
+                      {state.cadeia === 'não' && (
+                        <InputLabel label="Poderes faltantes">
+                          <select
+                            className={inputClass('faltante')}
+                            value={state.faltante}
+                            onChange={(e) =>
+                              handleChange('faltante', e.target.value as TriagemState['faltante'])
+                            }
+                            >
+                              <option value="">Selecione</option>
+                              <option value="ao próprio subscritor">Ao próprio subscritor</option>
+                              <option value="a outro elo da cadeia">A outro elo da cadeia</option>
+                            </select>
+                          </InputLabel>
+                        )}
+                      </>
+                    )}
+                  </div>
+                )}
               </SectionCard>
               <SectionCard title="Pedidos">
                 <div className="grid gap-4">
@@ -1939,14 +2227,23 @@ const App = () => {
                 </div>
               </SectionCard>
               <SectionCard title="Observações e minutas sugeridas">
-                {outputs.observacoes.length === 0 ? (
+                {outputs.observacoes.length === 0 && !(funjusBelow && funjusObs) ? (
                   <p className="text-sm text-slate-600">Nenhuma observação pendente.</p>
                 ) : (
-                  <ul className="list-disc pl-5 space-y-2 text-sm text-slate-700">
-                    {outputs.observacoes.map((obs, idx) => (
-                      <li key={idx}>{obs}</li>
-                    ))}
-                  </ul>
+                  <div className="space-y-2 text-sm text-slate-700">
+                    {outputs.observacoes.length > 0 && (
+                      <ul className="list-disc pl-5 space-y-2">
+                        {outputs.observacoes.map((obs, idx) => (
+                          <li key={idx}>{obs}</li>
+                        ))}
+                      </ul>
+                    )}
+                    {funjusBelow && funjusObs && (
+                      <p>
+                        <strong>Justificativa Funjus:</strong> {funjusObs}
+                      </p>
+                    )}
+                  </div>
                 )}
               </SectionCard>
               <div className="grid lg:grid-cols-2 gap-4">
@@ -1980,7 +2277,7 @@ const App = () => {
               </div>
               <div className="flex flex-wrap items-center gap-3 text-sm text-slate-600">
                 <Pill>
-                  Tribunal Superior: {formatCurrency(outputs.deverST)} | FUNJUS: {formatCurrency(outputs.deverFJ)}
+                  {outputs.stLabel}: {formatCurrency(outputs.deverST)} | FUNJUS: {formatCurrency(outputs.deverFJ)}
                 </Pill>
                 <Pill>Intimação: {formatDate(outputs.tempest.intim)}</Pill>
                 <Pill>Começo do prazo: {formatDate(outputs.tempest.comeco)}</Pill>
@@ -1996,6 +2293,18 @@ const App = () => {
 
     return (
       <div className="space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <Pill tone={currentStepErrorCount === 0 ? 'success' : 'warning'}>
+            {currentStepErrorCount === 0
+              ? 'Etapa completa'
+              : `${currentStepErrorCount} campo(s) pendente(s)`}
+          </Pill>
+          {currentStepErrorCount > 0 && (
+            <span className="text-xs text-slate-500">
+              Complete os campos pendentes para avançar.
+            </span>
+          )}
+        </div>
         {content}
       </div>
     );
@@ -2014,12 +2323,6 @@ const App = () => {
       ? 'negative'
       : 'neutral';
   const savedLabel = lastSavedAt ? `Salvo às ${formatTime(lastSavedAt)}` : 'Salvamento local';
-  const custasHelper = state.interp
-    ? `${outputs.stLabel} ${formatCurrency(outputs.deverST)} (${formatIsoDate(
-        outputs.stRateStart
-      )}) | FUNJUS ${formatCurrency(outputs.deverFJ)} (${formatIsoDate(outputs.fjRateStart)})`
-    : 'Informe a data de interposição para calcular as custas.';
-  const custasTotal = state.interp ? formatCurrency(outputs.deverST + outputs.deverFJ) : '—';
   const progress = Math.round((step / (steps.length - 1)) * 100);
 
   return (
@@ -2148,11 +2451,6 @@ const App = () => {
                   helper={state.emaberto === 'sim' ? 'Prazo em aberto na origem' : 'Fluxo em andamento'}
                   tone={contraTone}
                 />
-                <MetricCard
-                  label="Custas estimadas"
-                  value={custasTotal}
-                  helper={custasHelper}
-                />
               </div>
             </SectionCard>
             <SectionCard title="Consequências automáticas">
@@ -2227,12 +2525,13 @@ style.innerHTML = `
   background: #ffffff;
 }
 .input-error {
-  border-color: rgba(244, 63, 94, 0.6);
-  background: rgba(255, 241, 242, 0.7);
+  border-color: rgba(226, 232, 240, 0.95);
+  background: rgba(255, 255, 255, 0.9);
 }
 .input-error:focus {
-  box-shadow: 0 0 0 3px rgba(244, 63, 94, 0.18);
-  border-color: rgba(244, 63, 94, 0.8);
+  box-shadow: 0 0 0 3px rgba(249, 115, 22, 0.18);
+  border-color: rgba(249, 115, 22, 0.65);
+  background: #ffffff;
 }
 .input-success {
   border-color: rgba(16, 185, 129, 0.7);
@@ -2241,6 +2540,15 @@ style.innerHTML = `
 .input-success:focus {
   box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.2);
   border-color: rgba(16, 185, 129, 0.85);
+}
+.no-spinner::-webkit-outer-spin-button,
+.no-spinner::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.no-spinner {
+  -moz-appearance: textfield;
+  appearance: textfield;
 }
 @media (prefers-reduced-motion: reduce) {
   .animate-fade-in {
