@@ -92,3 +92,19 @@ Build vai para `docs/` (Vite `base: './'`):
 Notes:
 - `npm run build` gera `docs/404.html` (SPA fallback).
 - `base: './'` garante assets em subpath `/repo-name/`.
+
+### Variáveis no GitHub Actions
+
+Para o deploy funcionar no GitHub Pages, defina **Secrets** no repositório com as chaves abaixo
+(Settings → Secrets and variables → Actions):
+
+- `VITE_FIREBASE_API_KEY`
+- `VITE_FIREBASE_AUTH_DOMAIN`
+- `VITE_FIREBASE_PROJECT_ID`
+- `VITE_FIREBASE_STORAGE_BUCKET`
+- `VITE_FIREBASE_MESSAGING_SENDER_ID`
+- `VITE_FIREBASE_APP_ID`
+- `VITE_ADMIN_EMAILS`
+- `VITE_ALLOWED_EMAIL_DOMAIN`
+
+Também adicione o domínio `USERNAME.github.io` em **Firebase → Auth → Settings → Authorized domains**.
