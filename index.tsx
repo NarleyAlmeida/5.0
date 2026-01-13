@@ -11,6 +11,29 @@ import {
   ShieldAlert,
   ArrowRight,
 } from 'lucide-react';
+import { initializeApp } from 'firebase/app';
+import {
+  createUserWithEmailAndPassword,
+  getAuth,
+  onAuthStateChanged,
+  sendEmailVerification,
+  sendPasswordResetEmail,
+  signInWithEmailAndPassword,
+  signOut,
+  updateProfile,
+  type User,
+} from 'firebase/auth';
+import {
+  collection,
+  doc,
+  getDoc,
+  getFirestore,
+  increment,
+  onSnapshot,
+  query,
+  setDoc,
+  updateDoc,
+} from 'firebase/firestore';
 import { feriadosISO, prorrogsISO, stjRates, stfRates, funjusRates, ValorData } from './triario-data';
 import simbaLogo from './Dados/WhatsApp Image 2025-12-16 at 16.54.26.jpeg';
 
@@ -34,6 +57,18 @@ type Contrarrazoes = 'apresentadas' | 'ausente alguma' | 'ausentes' | '';
 type MPTeor = 'mera ciência' | 'pela admissão' | 'pela inadmissão' | 'ausência de interesse' | '';
 type CamaraArea = 'Cível' | 'Crime' | '';
 type ParcialOpcao = '' | 'não' | 'JG parcial' | 'COHAB Londrina' | 'outros';
+type UserRole = 'admin' | 'user';
+
+type UserProfile = {
+  uid: string;
+  email: string;
+  name: string;
+  role: UserRole;
+  active: boolean;
+  triageCount: number;
+  createdAt: string;
+  updatedAt: string;
+};
 
 type TriagemState = {
   tipo: TipoRecurso;
@@ -114,6 +149,34 @@ type LoadedState = { state: TriagemState; savedAt: Date | null };
 
 const STORAGE_KEY = 'triario_state_v2';
 const STORAGE_VERSION = 3;
+const USERS_COLLECTION = 'users';
+
+const firebaseConfig = {
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY ?? '',
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN ?? '',
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID ?? '',
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET ?? '',
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID ?? '',
+  appId: import.meta.env.VITE_FIREBASE_APP_ID ?? '',
+};
+const firebaseEnabled = Boolean(
+  firebaseConfig.apiKey && firebaseConfig.authDomain && firebaseConfig.projectId && firebaseConfig.appId
+);
+const firebaseApp = firebaseEnabled ? initializeApp(firebaseConfig) : null;
+const auth = firebaseApp ? getAuth(firebaseApp) : null;
+const db = firebaseApp ? getFirestore(firebaseApp) : null;
+if (auth) {
+  auth.languageCode = 'pt-BR';
+}
+const parseAdminEmails = (value?: string) =>
+  value
+    ?.split(',')
+    .map((item) => item.trim().toLowerCase())
+    .filter(Boolean) ?? [];
+const bootstrapAdminEmails = parseAdminEmails(import.meta.env.VITE_ADMIN_EMAILS);
+const allowedEmailDomain = (import.meta.env.VITE_ALLOWED_EMAIL_DOMAIN ?? 'tjpr.jus.br')
+  .trim()
+  .toLowerCase();
 
 const initialState: TriagemState = {
   tipo: '',
@@ -277,6 +340,71 @@ const parseStoredDate = (value?: string) => {
 };
 const sanitizeFilename = (value: string) =>
   value.trim().replace(/[\\/:*?"<>|]/g, '-').replace(/\s+/g, '_');
+const loadStoredState = (storageKey: string): LoadedState => {
+  try {
+    const raw = localStorage.getItem(storageKey);
+    if (!raw) return { state: initialState, savedAt: null };
+    const parsed = JSON.parse(raw) as Partial<StoredPayload & TriagemState>;
+    const stored = (parsed as StoredPayload).state || parsed;
+    const merged: TriagemState = { ...initialState, ...(stored as Partial<TriagemState>) };
+    if (!merged.parcialTipo && (stored as any)?.parcial) {
+      const legacy = (stored as any).parcial as YesNo;
+      merged.parcialTipo = legacy === 'sim' ? 'COHAB Londrina' : legacy === 'não' ? 'não' : '';
+    }
+    if (!merged.grumov) {
+      const legacyGuia = (stored as any)?.guiast as string | undefined;
+      const legacyComp = (stored as any)?.compst as string | undefined;
+      if (legacyGuia && legacyComp && legacyGuia !== legacyComp) {
+        merged.grumov = `${legacyGuia}; ${legacyComp}`;
+      } else {
+        merged.grumov = legacyGuia || legacyComp || '';
+      }
+    }
+    if (!merged.grumovComp) merged.grumovComp = merged.grumov || '';
+    if (!merged.funjusmov) {
+      const legacyGuia = (stored as any)?.guiamov as string | undefined;
+      const legacyComp = (stored as any)?.compmov as string | undefined;
+      if (legacyGuia && legacyComp && legacyGuia !== legacyComp) {
+        merged.funjusmov = `${legacyGuia}; ${legacyComp}`;
+      } else {
+        merged.funjusmov = legacyGuia || legacyComp || '';
+      }
+    }
+    if (merged.usarIntegral === undefined) merged.usarIntegral = false;
+    if (merged.consulta === '') merged.consulta = 'não';
+    const savedAt = parseStoredDate((parsed as StoredPayload).savedAt);
+    return { state: merged, savedAt };
+  } catch {
+    return { state: initialState, savedAt: null };
+  }
+};
+const normalizeEmail = (value: string) => value.trim().toLowerCase();
+const isAllowedEmail = (value: string) => normalizeEmail(value).endsWith(`@${allowedEmailDomain}`);
+const formatAuthError = (error: unknown) => {
+  const err = error as { code?: string; message?: string };
+  switch (err.code) {
+    case 'auth/invalid-email':
+      return 'E-mail inválido.';
+    case 'auth/user-not-found':
+      return 'Usuário não encontrado.';
+    case 'auth/wrong-password':
+      return 'Senha incorreta.';
+    case 'auth/invalid-credential':
+      return 'Credenciais inválidas.';
+    case 'auth/email-already-in-use':
+      return 'Este e-mail já está cadastrado.';
+    case 'auth/weak-password':
+      return 'A senha precisa ter pelo menos 6 caracteres.';
+    case 'auth/too-many-requests':
+      return 'Muitas tentativas. Aguarde alguns minutos e tente novamente.';
+    case 'auth/network-request-failed':
+      return 'Falha de rede. Verifique sua conexão.';
+    case 'permission-denied':
+      return 'Permissão negada para esta ação.';
+    default:
+      return err.message || 'Falha ao autenticar.';
+  }
+};
 
 const computeTempestividade = (state: TriagemState): Tempestividade => {
   const envio = parseInputDate(state.envio);
@@ -956,57 +1084,188 @@ const StepChip = ({
 );
 
 const App = () => {
-  const loadState = (): LoadedState => {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (!raw) return { state: initialState, savedAt: null };
-      const parsed = JSON.parse(raw) as Partial<StoredPayload & TriagemState>;
-      const stored = (parsed as StoredPayload).state || parsed;
-      const merged: TriagemState = { ...initialState, ...(stored as Partial<TriagemState>) };
-      if (!merged.parcialTipo && (stored as any)?.parcial) {
-        const legacy = (stored as any).parcial as YesNo;
-        merged.parcialTipo = legacy === 'sim' ? 'COHAB Londrina' : legacy === 'não' ? 'não' : '';
-      }
-      if (!merged.grumov) {
-        const legacyGuia = (stored as any)?.guiast as string | undefined;
-        const legacyComp = (stored as any)?.compst as string | undefined;
-        if (legacyGuia && legacyComp && legacyGuia !== legacyComp) {
-          merged.grumov = `${legacyGuia}; ${legacyComp}`;
-        } else {
-          merged.grumov = legacyGuia || legacyComp || '';
-        }
-      }
-      if (!merged.grumovComp) merged.grumovComp = merged.grumov || '';
-      if (!merged.funjusmov) {
-        const legacyGuia = (stored as any)?.guiamov as string | undefined;
-        const legacyComp = (stored as any)?.compmov as string | undefined;
-        if (legacyGuia && legacyComp && legacyGuia !== legacyComp) {
-          merged.funjusmov = `${legacyGuia}; ${legacyComp}`;
-        } else {
-          merged.funjusmov = legacyGuia || legacyComp || '';
-        }
-      }
-      if (merged.usarIntegral === undefined) merged.usarIntegral = false;
-      if (merged.consulta === '') merged.consulta = 'não';
-      const savedAt = parseStoredDate((parsed as StoredPayload).savedAt);
-      return { state: merged, savedAt };
-    } catch {
-      return { state: initialState, savedAt: null };
-    }
-  };
-
-  const initialLoadRef = useRef<LoadedState | null>(null);
-  if (!initialLoadRef.current) {
-    initialLoadRef.current = loadState();
-  }
-  const initialLoad = initialLoadRef.current || { state: initialState, savedAt: null };
-
-  const [state, setState] = useState<TriagemState>(initialLoad.state);
+  const [authUser, setAuthUser] = useState<User | null>(null);
+  const [profile, setProfile] = useState<UserProfile | null>(null);
+  const [authReady, setAuthReady] = useState(false);
+  const [authMode, setAuthMode] = useState<'login' | 'register' | 'reset'>('login');
+  const [authEmail, setAuthEmail] = useState('');
+  const [authPassword, setAuthPassword] = useState('');
+  const [authPasswordConfirm, setAuthPasswordConfirm] = useState('');
+  const [authName, setAuthName] = useState('');
+  const [authBusy, setAuthBusy] = useState(false);
+  const [authError, setAuthError] = useState('');
+  const [authMessage, setAuthMessage] = useState('');
+  const [blockedNotice, setBlockedNotice] = useState('');
+  const [storageKey, setStorageKey] = useState(`${STORAGE_KEY}_anon`);
+  const [state, setState] = useState<TriagemState>(initialState);
   const [step, setStep] = useState(0);
   const [copied, setCopied] = useState(false);
   const [copiedCons, setCopiedCons] = useState(false);
-  const [lastSavedAt, setLastSavedAt] = useState<Date | null>(initialLoad.savedAt);
+  const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null);
+  const triageLoggedRef = useRef(false);
+  const triageLogInFlightRef = useRef(false);
+  const [adminOpen, setAdminOpen] = useState(false);
+  const [adminUsers, setAdminUsers] = useState<UserProfile[]>([]);
+  const [adminFilter, setAdminFilter] = useState('');
+  const [adminEdits, setAdminEdits] = useState<
+    Record<string, { name: string; role: UserRole; active: boolean }>
+  >({});
+  const [adminBusyUid, setAdminBusyUid] = useState<string | null>(null);
+  const [adminNotice, setAdminNotice] = useState('');
   const mainRef = useRef<HTMLElement | null>(null);
+  const isAdmin = profile?.role === 'admin';
+
+  useEffect(() => {
+    if (!firebaseEnabled || !auth || !db) {
+      setAuthReady(true);
+      return;
+    }
+    let active = true;
+    const unsub = onAuthStateChanged(auth, async (user) => {
+      setAuthUser(user);
+      setProfile(null);
+      setAuthReady(false);
+      if (!user) {
+        if (active) setAuthReady(true);
+        return;
+      }
+      try {
+        const email = user.email || '';
+        if (!isAllowedEmail(email)) {
+          if (active) {
+            setBlockedNotice(`Acesso restrito a contas @${allowedEmailDomain}.`);
+          }
+          await signOut(auth);
+          return;
+        }
+        if (!user.emailVerified) {
+          if (active) {
+            setBlockedNotice('Confirme o e-mail para acessar a plataforma.');
+          }
+          await signOut(auth);
+          return;
+        }
+        const normalized = normalizeEmail(email);
+        const isBootstrapAdmin = normalized ? bootstrapAdminEmails.includes(normalized) : false;
+        const now = new Date().toISOString();
+        const userRef = doc(db, USERS_COLLECTION, user.uid);
+        const snap = await getDoc(userRef);
+        let nextProfile: UserProfile;
+        if (!snap.exists()) {
+          nextProfile = {
+            uid: user.uid,
+            email,
+            name: user.displayName || '',
+            role: isBootstrapAdmin ? 'admin' : 'user',
+            active: true,
+            triageCount: 0,
+            createdAt: now,
+            updatedAt: now,
+          };
+          await setDoc(userRef, nextProfile);
+        } else {
+          const data = snap.data() as Partial<UserProfile>;
+          nextProfile = {
+            uid: user.uid,
+            email: data.email ?? email,
+            name: data.name ?? user.displayName ?? '',
+            role: data.role ?? (isBootstrapAdmin ? 'admin' : 'user'),
+            active: data.active ?? true,
+            triageCount: data.triageCount ?? 0,
+            createdAt: data.createdAt ?? now,
+            updatedAt: now,
+          };
+          const needsMerge =
+            !data.email || !data.name || !data.role || data.active === undefined || !data.createdAt;
+          if (needsMerge) {
+            if (isBootstrapAdmin) {
+              await setDoc(userRef, nextProfile, { merge: true });
+            } else if (!data.name && nextProfile.name) {
+              await updateDoc(userRef, { name: nextProfile.name, updatedAt: now });
+            }
+          }
+        }
+        if (!nextProfile.active) {
+          if (active) setBlockedNotice('Conta desativada. Procure um administrador.');
+          await signOut(auth);
+          return;
+        }
+        if (active) {
+          setProfile(nextProfile);
+          setAuthError('');
+          setAuthMessage('');
+          setBlockedNotice('');
+        }
+      } catch (err) {
+        if (active) {
+          const message = formatAuthError(err);
+          setAuthError(message);
+          if ((err as { code?: string }).code === 'permission-denied') {
+            setAuthMessage('Aplique as regras do Firestore e tente novamente.');
+          }
+        }
+      } finally {
+        if (active) setAuthReady(true);
+      }
+    });
+    return () => {
+      active = false;
+      unsub();
+    };
+  }, []);
+
+  useEffect(() => {
+    const nextKey = authUser?.uid ? `${STORAGE_KEY}_${authUser.uid}` : `${STORAGE_KEY}_anon`;
+    setStorageKey(nextKey);
+  }, [authUser?.uid]);
+
+  useEffect(() => {
+    const stored = loadStoredState(storageKey);
+    setState(stored.state);
+    setLastSavedAt(stored.savedAt);
+    setStep(0);
+  }, [storageKey]);
+
+  useEffect(() => {
+    if (!isAdmin || !db) {
+      setAdminUsers([]);
+      return;
+    }
+    const usersQuery = query(collection(db, USERS_COLLECTION));
+    const unsub = onSnapshot(
+      usersQuery,
+      (snapshot) => {
+        const nextUsers = snapshot.docs.map((docSnap) => {
+          const data = docSnap.data() as Partial<UserProfile>;
+          const role = data.role === 'admin' ? 'admin' : 'user';
+          return {
+            uid: docSnap.id,
+            email: data.email ?? '',
+            name: data.name ?? '',
+            role,
+            active: data.active ?? true,
+            triageCount: data.triageCount ?? 0,
+            createdAt: data.createdAt ?? '',
+            updatedAt: data.updatedAt ?? '',
+          };
+        });
+        nextUsers.sort((a, b) => {
+          const nameCompare = a.name.localeCompare(b.name, 'pt-BR', { sensitivity: 'base' });
+          if (nameCompare !== 0) return nameCompare;
+          return a.email.localeCompare(b.email, 'pt-BR', { sensitivity: 'base' });
+        });
+        setAdminUsers(nextUsers);
+      },
+      (err) => {
+        setAdminNotice(formatAuthError(err));
+      }
+    );
+    return () => unsub();
+  }, [isAdmin]);
+
+  useEffect(() => {
+    if (!isAdmin) setAdminOpen(false);
+  }, [isAdmin]);
 
   const outputs = useMemo(() => computeOutputs(state), [state]);
   const summaryText = useMemo(() => buildResumoText(state, outputs), [state, outputs]);
@@ -1029,6 +1288,23 @@ const App = () => {
     });
     return counts;
   }, [fieldErrors]);
+  const filteredUsers = useMemo(() => {
+    const term = adminFilter.trim().toLowerCase();
+    if (!term) return adminUsers;
+    return adminUsers.filter((user) => {
+      const haystack = `${user.name} ${user.email}`.toLowerCase();
+      return haystack.includes(term);
+    });
+  }, [adminFilter, adminUsers]);
+  const totalTriages = useMemo(
+    () => adminUsers.reduce((total, user) => total + (user.triageCount || 0), 0),
+    [adminUsers]
+  );
+  const triageLeaderboard = useMemo(() => {
+    const sorted = [...adminUsers];
+    sorted.sort((a, b) => (b.triageCount || 0) - (a.triageCount || 0));
+    return sorted;
+  }, [adminUsers]);
   const isPublicEntity = state.dispensa === 'sim';
   const valorFJValue = state.valorfj.trim();
   const valorFJNum = Number(valorFJValue || 0);
@@ -1083,12 +1359,12 @@ const App = () => {
         state,
         savedAt: now.toISOString(),
       };
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+      localStorage.setItem(storageKey, JSON.stringify(payload));
       setLastSavedAt(now);
     } catch {
       /* ignore */
     }
-  }, [state]);
+  }, [state, storageKey]);
 
   useEffect(() => {
     if (!state.usarIntegral) return;
@@ -1143,6 +1419,7 @@ const App = () => {
   }, [step]);
 
   const downloadResumo = () => {
+    void recordTriageCompletion();
     const blob = new Blob([summaryText], { type: 'text/plain' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -1173,6 +1450,7 @@ const App = () => {
   };
 
   const copyResumo = async () => {
+    void recordTriageCompletion();
     const ok = await copyText(summaryText);
     if (ok) {
       setCopied(true);
@@ -1193,22 +1471,529 @@ const App = () => {
     }
   };
 
+  const handleLogin = async () => {
+    if (!auth) return;
+    setAuthBusy(true);
+    setAuthError('');
+    setAuthMessage('');
+    if (!isAllowedEmail(authEmail)) {
+      setAuthError(`Use um e-mail @${allowedEmailDomain} para entrar.`);
+      setAuthBusy(false);
+      return;
+    }
+    try {
+      await signInWithEmailAndPassword(auth, authEmail.trim(), authPassword);
+    } catch (err) {
+      setAuthError(formatAuthError(err));
+    } finally {
+      setAuthBusy(false);
+    }
+  };
+
+  const handleRegister = async () => {
+    if (!auth) return;
+    setAuthBusy(true);
+    setAuthError('');
+    setAuthMessage('');
+    if (!isAllowedEmail(authEmail)) {
+      setAuthError(`O cadastro é permitido apenas para e-mails @${allowedEmailDomain}.`);
+      setAuthBusy(false);
+      return;
+    }
+    if (authPassword.trim().length < 6) {
+      setAuthError('A senha precisa ter pelo menos 6 caracteres.');
+      setAuthBusy(false);
+      return;
+    }
+    if (authPassword !== authPasswordConfirm) {
+      setAuthError('As senhas não conferem.');
+      setAuthBusy(false);
+      return;
+    }
+    try {
+      const cred = await createUserWithEmailAndPassword(auth, authEmail.trim(), authPassword);
+      if (authName.trim()) {
+        await updateProfile(cred.user, { displayName: authName.trim() });
+      }
+      try {
+        await sendEmailVerification(cred.user);
+      } catch (err) {
+        setAuthError(formatAuthError(err));
+      }
+      setAuthMessage('Conta criada. Confirme o e-mail para entrar.');
+      setAuthPassword('');
+      setAuthPasswordConfirm('');
+      setAuthMode('login');
+    } catch (err) {
+      setAuthError(formatAuthError(err));
+    } finally {
+      setAuthBusy(false);
+    }
+  };
+
+  const handleResetPassword = async () => {
+    if (!auth) return;
+    setAuthBusy(true);
+    setAuthError('');
+    setAuthMessage('');
+    if (!isAllowedEmail(authEmail)) {
+      setAuthError(`Use um e-mail @${allowedEmailDomain} para redefinir a senha.`);
+      setAuthBusy(false);
+      return;
+    }
+    try {
+      await sendPasswordResetEmail(auth, authEmail.trim());
+      setAuthMessage('Enviamos um e-mail para redefinir sua senha.');
+    } catch (err) {
+      setAuthError(formatAuthError(err));
+    } finally {
+      setAuthBusy(false);
+    }
+  };
+
+  const handleSignOut = async () => {
+    if (!auth) return;
+    await signOut(auth);
+    setState(initialState);
+    setStep(0);
+    setAdminOpen(false);
+    triageLoggedRef.current = false;
+    triageLogInFlightRef.current = false;
+  };
+
+  const updateAdminDraft = (
+    user: UserProfile,
+    patch: Partial<{ name: string; role: UserRole; active: boolean }>
+  ) => {
+    setAdminEdits((prev) => {
+      const current = prev[user.uid] ?? { name: user.name, role: user.role, active: user.active };
+      return { ...prev, [user.uid]: { ...current, ...patch } };
+    });
+  };
+
+  const getAdminDraft = (user: UserProfile) =>
+    adminEdits[user.uid] ?? { name: user.name, role: user.role, active: user.active };
+
+  const handleSaveUser = async (user: UserProfile) => {
+    if (!db || !auth) return;
+    const draft = getAdminDraft(user);
+    const adminCount = adminUsers.filter((item) => item.role === 'admin').length;
+    const isSelf = authUser?.uid === user.uid;
+    if (isSelf && adminCount <= 1 && draft.role !== 'admin') {
+      setAdminNotice('Você é o último admin. Não é possível remover seu próprio acesso.');
+      return;
+    }
+    if (
+      draft.name === user.name &&
+      draft.role === user.role &&
+      draft.active === user.active
+    ) {
+      setAdminNotice('Nenhuma alteração pendente para salvar.');
+      return;
+    }
+    setAdminBusyUid(user.uid);
+    setAdminNotice('');
+    try {
+      await updateDoc(doc(db, USERS_COLLECTION, user.uid), {
+        name: draft.name,
+        role: draft.role,
+        active: draft.active,
+        updatedAt: new Date().toISOString(),
+      });
+      setAdminNotice('Cadastro atualizado.');
+    } catch (err) {
+      setAdminNotice(formatAuthError(err));
+    } finally {
+      setAdminBusyUid(null);
+    }
+  };
+
+  const handleResetForUser = async (email: string) => {
+    if (!auth) return;
+    setAdminNotice('');
+    try {
+      await sendPasswordResetEmail(auth, email);
+      setAdminNotice(`E-mail de redefinição enviado para ${email}.`);
+    } catch (err) {
+      setAdminNotice(formatAuthError(err));
+    }
+  };
+
+  const recordTriageCompletion = async () => {
+    if (!db || !authUser) return;
+    if (triageLoggedRef.current || triageLogInFlightRef.current) return;
+    triageLogInFlightRef.current = true;
+    try {
+      await updateDoc(doc(db, USERS_COLLECTION, authUser.uid), {
+        triageCount: increment(1),
+        updatedAt: new Date().toISOString(),
+      });
+      triageLoggedRef.current = true;
+      setProfile((prev) =>
+        prev ? { ...prev, triageCount: (prev.triageCount || 0) + 1 } : prev
+      );
+    } catch (err) {
+      setAdminNotice(formatAuthError(err));
+    } finally {
+      triageLogInFlightRef.current = false;
+    }
+  };
+
+  const handlePromoteToAdmin = async (user: UserProfile) => {
+    if (!db) return;
+    setAdminNotice('');
+    setAdminBusyUid(user.uid);
+    try {
+      await updateDoc(doc(db, USERS_COLLECTION, user.uid), {
+        role: 'admin',
+        updatedAt: new Date().toISOString(),
+      });
+      setAdminNotice(`${user.email || 'Usuário'} promovido a admin.`);
+      setAdminEdits((prev) => {
+        if (!prev[user.uid]) return prev;
+        return { ...prev, [user.uid]: { ...prev[user.uid], role: 'admin' } };
+      });
+    } catch (err) {
+      setAdminNotice(formatAuthError(err));
+    } finally {
+      setAdminBusyUid(null);
+    }
+  };
+
+  const handleAuthSubmit = (event: React.FormEvent) => {
+    event.preventDefault();
+    if (authMode === 'login') {
+      void handleLogin();
+    } else if (authMode === 'register') {
+      void handleRegister();
+    } else {
+      void handleResetPassword();
+    }
+  };
+
   const next = () => setStep((s) => Math.min(steps.length - 1, s + 1));
   const prev = () => setStep((s) => Math.max(0, s - 1));
   const clearStorage = () => {
     try {
-      localStorage.removeItem(STORAGE_KEY);
+      localStorage.removeItem(storageKey);
     } catch {
       /* ignore */
     }
     setState(initialState);
     setStep(0);
+    setLastSavedAt(null);
+    triageLoggedRef.current = false;
+    triageLogInFlightRef.current = false;
   };
   const restart = () => {
     clearStorage();
   };
-  const confirmRestart = (message: string) => {
-    if (window.confirm(message)) restart();
+  const confirmRestart = (message: string, onConfirm?: () => void) => {
+    if (!window.confirm(message)) return;
+    onConfirm?.();
+    restart();
+  };
+
+  const renderAuth = () => {
+    const needsProfile = Boolean(authUser && !profile);
+    return (
+      <div className="min-h-screen page-bg text-slate-900">
+        <div className="min-h-screen flex items-center justify-center px-4 py-10">
+          <div className="w-full max-w-2xl space-y-4">
+            <div className="text-center space-y-2">
+              <div className="mx-auto h-14 w-14 rounded-2xl bg-white border border-slate-200 overflow-hidden shadow-lg shadow-slate-300/60 flex items-center justify-center">
+                <img src={simbaLogo} alt="Simba-JUD" className="h-full w-full object-cover" />
+              </div>
+              <p className="text-xs uppercase tracking-[0.3em] text-slate-500">Simba-JUD</p>
+              <h1 className="text-2xl font-semibold text-slate-900 font-display">
+                Acesso ao Portal de Triagem
+              </h1>
+            </div>
+            <div className="flex flex-wrap items-center justify-center gap-2">
+              {[
+                { id: 'login', label: 'Entrar' },
+                { id: 'register', label: 'Criar conta' },
+                { id: 'reset', label: 'Redefinir senha' },
+              ].map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => {
+                    setAuthMode(item.id as typeof authMode);
+                    setAuthError('');
+                    setAuthMessage('');
+                  }}
+                  className={`px-4 py-2 rounded-full text-xs font-semibold border transition ${
+                    authMode === item.id
+                      ? 'bg-slate-900 text-white border-slate-900 shadow-sm'
+                      : 'bg-white text-slate-700 border-slate-200 hover:border-slate-300'
+                  }`}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+            {needsProfile && (
+              <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                <p className="font-semibold">Perfil não carregado.</p>
+                <p className="mt-1">
+                  Verifique as regras do Firestore e domínios autorizados. Se quiser, saia e entre
+                  novamente.
+                </p>
+                <button
+                  type="button"
+                  onClick={handleSignOut}
+                  className="mt-3 inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-amber-200 bg-white text-amber-800 hover:shadow-sm transition"
+                >
+                  Sair
+                </button>
+              </div>
+            )}
+            <SectionCard title="Credenciais">
+              <form className="grid gap-4" onSubmit={handleAuthSubmit}>
+                {blockedNotice && (
+                  <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
+                    {blockedNotice}
+                  </div>
+                )}
+                {authError && (
+                  <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
+                    {authError}
+                  </div>
+                )}
+                {authMessage && (
+                  <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
+                    {authMessage}
+                  </div>
+                )}
+                {authMode === 'register' && (
+                  <InputLabel label="Nome completo">
+                    <input
+                      className="input"
+                      value={authName}
+                      onChange={(e) => setAuthName(e.target.value)}
+                      placeholder="Digite seu nome"
+                      autoComplete="name"
+                    />
+                  </InputLabel>
+                )}
+                <InputLabel label="E-mail">
+                  <input
+                    className="input"
+                    type="email"
+                    value={authEmail}
+                    onChange={(e) => setAuthEmail(e.target.value)}
+                    placeholder="nome@dominio.com"
+                    autoComplete="email"
+                    required
+                  />
+                </InputLabel>
+                {authMode !== 'reset' && (
+                  <InputLabel label="Senha">
+                    <input
+                      className="input"
+                      type="password"
+                      value={authPassword}
+                      onChange={(e) => setAuthPassword(e.target.value)}
+                      placeholder="••••••••"
+                      autoComplete={authMode === 'login' ? 'current-password' : 'new-password'}
+                      required
+                    />
+                  </InputLabel>
+                )}
+                {authMode === 'register' && (
+                  <InputLabel label="Confirme a senha">
+                    <input
+                      className="input"
+                      type="password"
+                      value={authPasswordConfirm}
+                      onChange={(e) => setAuthPasswordConfirm(e.target.value)}
+                      placeholder="••••••••"
+                      autoComplete="new-password"
+                      required
+                    />
+                  </InputLabel>
+                )}
+                {authMode === 'reset' && (
+                  <p className="text-xs text-slate-500">
+                    Enviaremos um link de redefinição de senha para o seu e-mail.
+                  </p>
+                )}
+                <button
+                  type="submit"
+                  disabled={authBusy}
+                  className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-slate-900 text-white hover:bg-black transition shadow-sm disabled:opacity-60"
+                >
+                  {authBusy
+                    ? 'Aguarde...'
+                    : authMode === 'login'
+                    ? 'Entrar'
+                    : authMode === 'register'
+                    ? 'Criar conta'
+                    : 'Enviar link'}
+                </button>
+              </form>
+            </SectionCard>
+            <p className="text-center text-xs text-slate-500">
+              Cadastro aberto apenas para contas @{allowedEmailDomain}.
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const renderAdminPanel = () => {
+    if (!isAdmin || !adminOpen) return null;
+    const adminCount = adminUsers.filter((user) => user.role === 'admin').length;
+    return (
+      <div className="mb-6 space-y-4">
+        <SectionCard title="Dashboard de triagens">
+          <div className="grid gap-4">
+            <div className="flex flex-wrap items-center gap-2">
+              <Pill>{totalTriages} triagem(ns) registradas</Pill>
+              <Pill>{adminUsers.length} usuário(s)</Pill>
+            </div>
+            {triageLeaderboard.length === 0 ? (
+              <p className="text-sm text-slate-600">Nenhuma triagem registrada.</p>
+            ) : (
+              <div className="grid gap-2 md:grid-cols-2">
+                {triageLeaderboard.map((user) => (
+                  <div
+                    key={user.uid}
+                    className="flex items-center justify-between rounded-xl border border-slate-200 bg-white/80 px-4 py-3 text-sm text-slate-700"
+                  >
+                    <div className="min-w-0">
+                      <p className="font-semibold text-slate-900 truncate">
+                        {user.name || user.email || 'Sem nome'}
+                      </p>
+                      <p className="text-xs text-slate-500 truncate">{user.email}</p>
+                    </div>
+                    <span className="font-semibold">{user.triageCount || 0}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </SectionCard>
+        <SectionCard title="Administração de usuários">
+          <div className="grid gap-4">
+            <div className="flex flex-wrap items-center gap-2">
+              <input
+                className="input flex-1 min-w-[220px]"
+                placeholder="Buscar por nome ou e-mail"
+                value={adminFilter}
+                onChange={(e) => setAdminFilter(e.target.value)}
+              />
+              <Pill>{adminUsers.length} usuário(s)</Pill>
+              <Pill tone="success">{adminCount} admin(s)</Pill>
+            </div>
+            {adminNotice && (
+              <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-700">
+                {adminNotice}
+              </div>
+            )}
+            {filteredUsers.length === 0 ? (
+              <p className="text-sm text-slate-600">Nenhum usuário encontrado.</p>
+            ) : (
+              <div className="grid gap-3">
+                {filteredUsers.map((user) => {
+                  const draft = getAdminDraft(user);
+                  const isSelf = authUser?.uid === user.uid;
+                  const disableRoleChange = isSelf && adminCount <= 1;
+                  return (
+                    <div
+                      key={user.uid}
+                      className="rounded-2xl border border-white/70 bg-white/80 p-4 shadow-sm"
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div>
+                          <p className="text-sm font-semibold text-slate-900">
+                            {user.name || 'Sem nome'}
+                          </p>
+                          <p className="text-xs text-slate-500">{user.email || 'E-mail não informado'}</p>
+                          <p className="text-xs text-slate-500">Triagens: {user.triageCount || 0}</p>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          {isSelf && <Pill>Você</Pill>}
+                          {user.role === 'admin' && <Pill tone="success">Admin</Pill>}
+                          {!user.active && <Pill tone="warning">Desativado</Pill>}
+                        </div>
+                      </div>
+                      <div className="mt-4 grid gap-3 md:grid-cols-3">
+                        <InputLabel label="Nome">
+                          <input
+                            className="input"
+                            value={draft.name}
+                            onChange={(e) => updateAdminDraft(user, { name: e.target.value })}
+                          />
+                        </InputLabel>
+                        <InputLabel label="Perfil">
+                          <select
+                            className="input"
+                            value={draft.role}
+                            disabled={disableRoleChange}
+                            onChange={(e) =>
+                              updateAdminDraft(user, { role: e.target.value as UserRole })
+                            }
+                          >
+                            <option value="user">Usuário</option>
+                            <option value="admin">Admin</option>
+                          </select>
+                          {disableRoleChange && (
+                            <span className="text-xs text-slate-500">
+                              Você é o único admin cadastrado.
+                            </span>
+                          )}
+                        </InputLabel>
+                        <InputLabel label="Status">
+                          <select
+                            className="input"
+                            value={draft.active ? 'ativo' : 'inativo'}
+                            onChange={(e) => updateAdminDraft(user, { active: e.target.value === 'ativo' })}
+                          >
+                            <option value="ativo">Ativo</option>
+                            <option value="inativo">Desativado</option>
+                          </select>
+                        </InputLabel>
+                      </div>
+                      <div className="mt-4 flex flex-wrap items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => handleSaveUser(user)}
+                          disabled={adminBusyUid === user.uid}
+                          className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-slate-900 text-white hover:bg-black transition shadow-sm disabled:opacity-60"
+                        >
+                          {adminBusyUid === user.uid ? 'Salvando...' : 'Salvar'}
+                        </button>
+                        {draft.role !== 'admin' && (
+                          <button
+                            type="button"
+                            onClick={() => handlePromoteToAdmin(user)}
+                            disabled={adminBusyUid === user.uid}
+                            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg border border-emerald-200 bg-emerald-600 text-white hover:bg-emerald-700 transition shadow-sm disabled:opacity-60"
+                          >
+                            Promover a admin
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => handleResetForUser(user.email)}
+                          disabled={!user.email}
+                          className="inline-flex items-center gap-2 px-4 py-2 rounded-lg border border-slate-200 bg-white text-slate-800 hover:shadow-sm transition disabled:opacity-60"
+                        >
+                          Enviar reset de senha
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </SectionCard>
+      </div>
+    );
   };
 
   const renderStep = () => {
@@ -2325,6 +3110,41 @@ const App = () => {
   const savedLabel = lastSavedAt ? `Salvo às ${formatTime(lastSavedAt)}` : 'Salvamento local';
   const progress = Math.round((step / (steps.length - 1)) * 100);
 
+  if (!firebaseEnabled) {
+    return (
+      <div className="min-h-screen page-bg text-slate-900 flex items-center justify-center px-4 py-10">
+        <SectionCard title="Configuração necessária">
+          <div className="space-y-3 text-sm text-slate-600">
+            <p>
+              Configure as variáveis do Firebase para habilitar autenticação e perfis de usuário.
+            </p>
+            <ul className="list-disc pl-5 space-y-1">
+              <li>`VITE_FIREBASE_API_KEY`</li>
+              <li>`VITE_FIREBASE_AUTH_DOMAIN`</li>
+              <li>`VITE_FIREBASE_PROJECT_ID`</li>
+              <li>`VITE_FIREBASE_APP_ID`</li>
+            </ul>
+            <p>Depois reinicie o servidor.</p>
+          </div>
+        </SectionCard>
+      </div>
+    );
+  }
+
+  if (!authReady) {
+    return (
+      <div className="min-h-screen page-bg text-slate-900 flex items-center justify-center px-4 py-10">
+        <SectionCard title="Carregando">
+          <p className="text-sm text-slate-600">Preparando o acesso seguro...</p>
+        </SectionCard>
+      </div>
+    );
+  }
+
+  if (!authUser || !profile) {
+    return renderAuth();
+  }
+
   return (
     <div className="min-h-screen page-bg text-slate-900 relative">
       <div className="pointer-events-none absolute inset-0">
@@ -2349,7 +3169,24 @@ const App = () => {
             <div className="flex flex-wrap items-center gap-2">
               <div className="hidden md:flex items-center gap-2">
                 <Pill>{savedLabel}</Pill>
+                <Pill>{profile.name || profile.email}</Pill>
+                <Pill>Triagens: {profile.triageCount || 0}</Pill>
+                {isAdmin && <Pill tone="success">Admin</Pill>}
               </div>
+              {isAdmin && (
+                <button
+                  onClick={() => setAdminOpen((open) => !open)}
+                  className="text-sm px-3 py-2 rounded-lg border border-slate-200 bg-white text-slate-800 hover:shadow-sm transition"
+                >
+                  {adminOpen ? 'Fechar admin' : 'Administração'}
+                </button>
+              )}
+              <button
+                onClick={handleSignOut}
+                className="text-sm px-3 py-2 rounded-lg border border-slate-200 bg-white text-slate-800 hover:shadow-sm transition"
+              >
+                Sair
+              </button>
               <button
                 onClick={() => confirmRestart('Isso vai limpar a triagem atual. Deseja continuar?')}
                 className="text-sm px-3 py-2 rounded-lg border border-slate-900 bg-slate-900 text-white hover:bg-black transition shadow-sm"
@@ -2377,6 +3214,9 @@ const App = () => {
             </p>
             <div className="mt-3 flex flex-wrap items-center gap-2 md:hidden">
               <Pill>{savedLabel}</Pill>
+              <Pill>{profile.name || profile.email}</Pill>
+              <Pill>Triagens: {profile.triageCount || 0}</Pill>
+              {isAdmin && <Pill tone="success">Admin</Pill>}
             </div>
             <div className="mt-4 flex items-center gap-2 overflow-x-auto pb-2" aria-label="Etapas">
               {steps.map((item, index) => (
@@ -2393,92 +3233,97 @@ const App = () => {
         </header>
 
         <main ref={mainRef} className="max-w-7xl mx-auto px-4 py-8">
-        <div className="grid lg:grid-cols-[2fr_1fr] gap-5 items-start">
-          <div className="space-y-4">
-            <div className="bg-white/80 backdrop-blur-xl border border-white/70 rounded-3xl p-6 shadow-[0_28px_60px_-40px_rgba(15,23,42,0.5)]">
-              <div className="animate-fade-in">{renderStep()}</div>
-              <div className="mt-6 flex items-center justify-between">
-                <button
-                  onClick={prev}
-                  disabled={step === 0}
-                  className="inline-flex items-center gap-2 px-4 py-2 rounded-lg border border-slate-300 text-slate-800 bg-white disabled:opacity-50 disabled:cursor-not-allowed hover:shadow-sm transition"
-                >
-                  <ChevronLeft className="w-4 h-4" />
-                  Voltar
-                </button>
-                {step < steps.length - 1 ? (
+          {renderAdminPanel()}
+          <div className="grid lg:grid-cols-[2fr_1fr] gap-5 items-start">
+            <div className="space-y-4">
+              <div className="bg-white/80 backdrop-blur-xl border border-white/70 rounded-3xl p-6 shadow-[0_28px_60px_-40px_rgba(15,23,42,0.5)]">
+                <div className="animate-fade-in">{renderStep()}</div>
+                <div className="mt-6 flex items-center justify-between">
                   <button
-                    onClick={next}
-                    className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-gradient-to-r from-slate-900 to-slate-800 text-white hover:from-slate-950 hover:to-slate-900 transition shadow-sm"
+                    onClick={prev}
+                    disabled={step === 0}
+                    className="inline-flex items-center gap-2 px-4 py-2 rounded-lg border border-slate-300 text-slate-800 bg-white disabled:opacity-50 disabled:cursor-not-allowed hover:shadow-sm transition"
                   >
-                    Avançar
-                    <ChevronRight className="w-4 h-4" />
+                    <ChevronLeft className="w-4 h-4" />
+                    Voltar
                   </button>
-                ) : (
-                  <div className="flex flex-wrap items-center gap-3">
+                  {step < steps.length - 1 ? (
                     <button
-                      onClick={downloadResumo}
-                      className="inline-flex items-center gap-2 px-4 py-2 rounded-lg border border-red-300 bg-red-600 text-white hover:bg-red-700 hover:shadow-sm transition"
+                      onClick={next}
+                      className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-gradient-to-r from-slate-900 to-slate-800 text-white hover:from-slate-950 hover:to-slate-900 transition shadow-sm"
                     >
-                      <FileText className="w-4 h-4" />
-                      Baixar resumo
+                      Avançar
+                      <ChevronRight className="w-4 h-4" />
                     </button>
+                  ) : (
+                    <div className="flex flex-wrap items-center gap-3">
+                      <button
+                        onClick={downloadResumo}
+                        className="inline-flex items-center gap-2 px-4 py-2 rounded-lg border border-red-300 bg-red-600 text-white hover:bg-red-700 hover:shadow-sm transition"
+                      >
+                        <FileText className="w-4 h-4" />
+                        Baixar resumo
+                      </button>
                     <button
-                      onClick={() => confirmRestart('Isso vai limpar a triagem atual. Deseja iniciar outra?')}
+                      onClick={() =>
+                        confirmRestart('Isso vai limpar a triagem atual. Deseja iniciar outra?', () => {
+                          void recordTriageCompletion();
+                        })
+                      }
                       className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-gradient-to-r from-emerald-600 to-teal-600 text-white hover:from-emerald-700 hover:to-teal-700 transition shadow-sm"
                     >
-                      Nova triagem
-                      <ArrowRight className="w-4 h-4" />
-                    </button>
-                  </div>
-                )}
+                        Nova triagem
+                        <ArrowRight className="w-4 h-4" />
+                      </button>
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
-          </div>
 
-          <aside className="space-y-3 lg:sticky lg:top-20">
-            <SectionCard title="Resumo">
-              <div className="grid gap-3">
-                <MetricCard
-                  label="Tempestividade"
-                  value={outputs.tempest.status}
-                  helper={`Vencimento: ${formatDate(outputs.tempest.venc)}`}
-                  tone={tempestTone}
-                />
-                <MetricCard
-                  label="Contrarrazões"
-                  value={outputs.controut}
-                  helper={state.emaberto === 'sim' ? 'Prazo em aberto na origem' : 'Fluxo em andamento'}
-                  tone={contraTone}
-                />
-              </div>
-            </SectionCard>
-            <SectionCard title="Consequências automáticas">
-              {consequencias.length === 0 ? (
-                <p className="text-sm text-slate-600">Nenhum comando gerado até agora.</p>
-              ) : (
-                <ul className="list-disc pl-5 space-y-2 text-sm text-slate-700">
-                  {consequencias.map((item, idx) => (
-                    <li key={idx}>{item}</li>
-                  ))}
-                </ul>
-              )}
-              <div className="mt-3 flex flex-wrap items-center gap-2">
-                <button
-                  onClick={copyConsequencias}
-                  className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-slate-200 bg-white text-slate-800 hover:shadow-sm transition"
-                >
-                  <ClipboardList className="w-4 h-4" />
-                  {copiedCons ? 'Copiado!' : 'Copiar consequências'}
-                </button>
-                <span className="sr-only" role="status" aria-live="polite">
-                  {copiedCons ? 'Consequências copiadas para a área de transferência.' : ''}
-                </span>
-              </div>
-            </SectionCard>
-          </aside>
-        </div>
-      </main>
+            <aside className="space-y-3 lg:sticky lg:top-20">
+              <SectionCard title="Resumo">
+                <div className="grid gap-3">
+                  <MetricCard
+                    label="Tempestividade"
+                    value={outputs.tempest.status}
+                    helper={`Vencimento: ${formatDate(outputs.tempest.venc)}`}
+                    tone={tempestTone}
+                  />
+                  <MetricCard
+                    label="Contrarrazões"
+                    value={outputs.controut}
+                    helper={state.emaberto === 'sim' ? 'Prazo em aberto na origem' : 'Fluxo em andamento'}
+                    tone={contraTone}
+                  />
+                </div>
+              </SectionCard>
+              <SectionCard title="Consequências automáticas">
+                {consequencias.length === 0 ? (
+                  <p className="text-sm text-slate-600">Nenhum comando gerado até agora.</p>
+                ) : (
+                  <ul className="list-disc pl-5 space-y-2 text-sm text-slate-700">
+                    {consequencias.map((item, idx) => (
+                      <li key={idx}>{item}</li>
+                    ))}
+                  </ul>
+                )}
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <button
+                    onClick={copyConsequencias}
+                    className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-slate-200 bg-white text-slate-800 hover:shadow-sm transition"
+                  >
+                    <ClipboardList className="w-4 h-4" />
+                    {copiedCons ? 'Copiado!' : 'Copiar consequências'}
+                  </button>
+                  <span className="sr-only" role="status" aria-live="polite">
+                    {copiedCons ? 'Consequências copiadas para a área de transferência.' : ''}
+                  </span>
+                </div>
+              </SectionCard>
+            </aside>
+          </div>
+        </main>
       </div>
     </div>
   );
