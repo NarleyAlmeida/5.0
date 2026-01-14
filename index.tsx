@@ -161,6 +161,7 @@ type LoadedState = { state: TriagemState; savedAt: Date | null };
 const STORAGE_KEY = 'triario_state_v2';
 const STORAGE_VERSION = 3;
 const USERS_COLLECTION = 'users';
+const ADMIN_REQUESTS_COLLECTION = 'adminRequests';
 const REMEMBER_KEY = 'triario_remember_login';
 
 const firebaseConfig = {
@@ -1144,34 +1145,25 @@ const StepChip = ({
   </button>
 );
 
-const watermarkLines: React.ReactNode[] = [
-  'Desenvolvido por :',
-  '',
-  'P-SEP-AR - GESTÃO 2025/2026',
-  '',
-  'Assessoria de Recursos aos Tribunais Superiores',
-  '',
-  '(STF e STJ) da Secretaria Especial da Presidência',
-  '',
-  'Elvertoni Martelli Coimbr',
-  '',
-  'Luís Gustavo Arruda Lançoni',
-  '',
-  <span className="font-semibold">Narley Almeida de Sousa</span>,
-  '',
-  'Rodrigo Louzano',
-];
-
 const Watermark = () => (
   <div className="watermark pointer-events-none fixed bottom-4 right-4 z-30 max-w-[320px] text-right text-[9px] leading-tight opacity-80">
-    <p>
-      {watermarkLines.map((line, index) => (
-        <React.Fragment key={index}>
-          {line}
-          {index < watermarkLines.length - 1 && <br />}
-        </React.Fragment>
-      ))}
-    </p>
+    <div className="flex flex-col gap-[1px]">
+      <span>Desenvolvido por :</span>
+      <span className="block h-[3px]" aria-hidden="true" />
+      <span>P-SEP-AR - GESTÃO 2025/2026</span>
+      <span className="block h-[3px]" aria-hidden="true" />
+      <span>Assessoria de Recursos aos Tribunais Superiores</span>
+      <span className="block h-[3px]" aria-hidden="true" />
+      <span>(STF e STJ) da Secretaria Especial da Presidência</span>
+      <span className="block h-[3px]" aria-hidden="true" />
+      <span>Elvertoni Martelli Coimbr</span>
+      <span className="block h-[3px]" aria-hidden="true" />
+      <span>Luís Gustavo Arruda Lançoni</span>
+      <span className="block h-[3px]" aria-hidden="true" />
+      <span className="font-semibold">Narley Almeida de Sousa</span>
+      <span className="block h-[3px]" aria-hidden="true" />
+      <span>Rodrigo Louzano</span>
+    </div>
   </div>
 );
 
@@ -1208,6 +1200,8 @@ const App = () => {
   const [profileDraft, setProfileDraft] = useState({ name: '', photoURL: '' });
   const [profileNotice, setProfileNotice] = useState('');
   const [profileBusy, setProfileBusy] = useState(false);
+  const [adminRequestNotice, setAdminRequestNotice] = useState('');
+  const [adminRequestBusy, setAdminRequestBusy] = useState(false);
   const [selfDeleteOpen, setSelfDeleteOpen] = useState(false);
   const [selfDeletePassword, setSelfDeletePassword] = useState('');
   const [selfDeleteError, setSelfDeleteError] = useState('');
@@ -1414,6 +1408,7 @@ const App = () => {
     if (!profile) return;
     setProfileDraft({ name: profile.name ?? '', photoURL: profile.photoURL ?? '' });
     setTheme(profile.theme ?? 'light');
+    setAdminRequestNotice('');
   }, [profile?.uid]);
 
   useEffect(() => {
@@ -1788,6 +1783,8 @@ const App = () => {
     setAdminOpen(false);
     setProfileOpen(false);
     setProfileNotice('');
+    setAdminRequestNotice('');
+    setAdminRequestBusy(false);
     setResendCooldown(0);
     triageLoggedRef.current = false;
     triageLogInFlightRef.current = false;
@@ -1945,6 +1942,52 @@ const App = () => {
       setProfileNotice('Enviamos um e-mail para redefinir sua senha.');
     } catch (err) {
       setProfileNotice(formatAuthError(err));
+    }
+  };
+
+  const handleAdminRequest = async () => {
+    if (!authUser || !db) return;
+    setAdminRequestNotice('');
+    setAdminRequestBusy(true);
+    try {
+      const requestRef = doc(db, ADMIN_REQUESTS_COLLECTION, authUser.uid);
+      const snap = await getDoc(requestRef);
+      const now = new Date().toISOString();
+      if (snap.exists()) {
+        const data = snap.data() as { status?: string };
+        if (data.status === 'approved') {
+          setAdminRequestNotice('Seu acesso já foi aprovado. Saia e entre novamente.');
+        } else if (data.status === 'pending') {
+          setAdminRequestNotice('Solicitação já enviada. Aguarde aprovação.');
+        } else {
+          await setDoc(
+            requestRef,
+            {
+              uid: authUser.uid,
+              email: authUser.email ?? '',
+              name: authUser.displayName ?? '',
+              status: 'pending',
+              updatedAt: now,
+            },
+            { merge: true }
+          );
+          setAdminRequestNotice('Solicitação reenviada com sucesso.');
+        }
+      } else {
+        await setDoc(requestRef, {
+          uid: authUser.uid,
+          email: authUser.email ?? '',
+          name: authUser.displayName ?? '',
+          status: 'pending',
+          createdAt: now,
+          updatedAt: now,
+        });
+        setAdminRequestNotice('Solicitação enviada. Aguarde aprovação do admin.');
+      }
+    } catch (err) {
+      setAdminRequestNotice(formatAuthError(err));
+    } finally {
+      setAdminRequestBusy(false);
     }
   };
 
@@ -2330,6 +2373,11 @@ const App = () => {
                 {profileNotice}
               </div>
             )}
+            {adminRequestNotice && (
+              <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
+                {adminRequestNotice}
+              </div>
+            )}
             <div className="grid gap-3 md:grid-cols-2">
               <InputLabel label="Nome">
                 <input
@@ -2388,6 +2436,16 @@ const App = () => {
               >
                 Remover foto
               </button>
+              {!isAdmin && (
+                <button
+                  type="button"
+                  onClick={handleAdminRequest}
+                  disabled={adminRequestBusy}
+                  className="inline-flex items-center gap-2 px-4 py-2 rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 transition shadow-sm disabled:opacity-60"
+                >
+                  {adminRequestBusy ? 'Enviando...' : 'Solicitar acesso admin'}
+                </button>
+              )}
               <button
                 type="button"
                 onClick={toggleSelfDelete}
