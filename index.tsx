@@ -41,6 +41,7 @@ import {
   query,
   setDoc,
   updateDoc,
+  where,
 } from 'firebase/firestore';
 import { feriadosISO, prorrogsISO, stjRates, stfRates, funjusRates, ValorData } from './triario-data';
 import simbaLogo from './Dados/WhatsApp Image 2025-12-16 at 16.54.26.jpeg';
@@ -66,7 +67,7 @@ type MPTeor = 'mera ciência' | 'pela admissão' | 'pela inadmissão' | 'ausênc
 type CamaraArea = 'Cível' | 'Crime' | '';
 type ParcialOpcao = '' | 'não' | 'JG parcial' | 'COHAB Londrina' | 'outros';
 type UserRole = 'admin' | 'user';
-type ThemeMode = 'light' | 'dark';
+type ThemeMode = 'light' | 'dark' | 'system';
 
 type UserProfile = {
   uid: string;
@@ -79,6 +80,16 @@ type UserProfile = {
   theme: ThemeMode;
   createdAt: string;
   updatedAt: string;
+};
+
+type AdminRequest = {
+  id: string;
+  uid: string;
+  email: string;
+  name: string;
+  status: 'pending' | 'approved' | 'rejected';
+  createdAt?: string;
+  updatedAt?: string;
 };
 
 type TriagemState = {
@@ -392,6 +403,10 @@ const loadStoredState = (storageKey: string): LoadedState => {
   }
 };
 const normalizeEmail = (value: string) => value.trim().toLowerCase();
+const parseTheme = (value?: string): ThemeMode => {
+  if (value === 'dark' || value === 'light' || value === 'system') return value;
+  return 'system';
+};
 const normalizeUserKey = (user: UserProfile) => {
   const email = user.email ? normalizeEmail(user.email) : '';
   return email || user.uid;
@@ -1160,7 +1175,7 @@ const Watermark = () => (
       <span className="block h-[3px]" aria-hidden="true" />
       <span>Luís Gustavo Arruda Lançoni</span>
       <span className="block h-[3px]" aria-hidden="true" />
-      <span className="font-semibold">Narley Almeida de Sousa</span>
+      <span className="font-bold">Narley Almeida de Sousa</span>
       <span className="block h-[3px]" aria-hidden="true" />
       <span>Rodrigo Louzano</span>
     </div>
@@ -1196,6 +1211,7 @@ const App = () => {
   const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null);
   const triageLoggedRef = useRef(false);
   const triageLogInFlightRef = useRef(false);
+  const autoApprovedRequestsRef = useRef<Set<string>>(new Set());
   const [profileOpen, setProfileOpen] = useState(false);
   const [profileDraft, setProfileDraft] = useState({ name: '', photoURL: '' });
   const [profileNotice, setProfileNotice] = useState('');
@@ -1206,7 +1222,11 @@ const App = () => {
   const [selfDeletePassword, setSelfDeletePassword] = useState('');
   const [selfDeleteError, setSelfDeleteError] = useState('');
   const [selfDeleteBusy, setSelfDeleteBusy] = useState(false);
-  const [theme, setTheme] = useState<ThemeMode>('light');
+  const [theme, setTheme] = useState<ThemeMode>('system');
+  const [systemPrefersDark, setSystemPrefersDark] = useState(() => {
+    if (typeof window === 'undefined' || !window.matchMedia) return false;
+    return window.matchMedia('(prefers-color-scheme: dark)').matches;
+  });
   const [resendCooldown, setResendCooldown] = useState(0);
   const [adminOpen, setAdminOpen] = useState(false);
   const [adminUsers, setAdminUsers] = useState<UserProfile[]>([]);
@@ -1216,6 +1236,8 @@ const App = () => {
   >({});
   const [adminBusyUid, setAdminBusyUid] = useState<string | null>(null);
   const [adminNotice, setAdminNotice] = useState('');
+  const [adminRequests, setAdminRequests] = useState<AdminRequest[]>([]);
+  const [adminRequestBusyId, setAdminRequestBusyId] = useState<string | null>(null);
   const [deleteTargetUid, setDeleteTargetUid] = useState<string | null>(null);
   const [deletePassword, setDeletePassword] = useState('');
   const [deleteError, setDeleteError] = useState('');
@@ -1225,6 +1247,7 @@ const App = () => {
   const authEmailValue = authEmailLocal
     ? `${authEmailLocal.trim().toLowerCase()}@${allowedEmailDomain}`
     : '';
+  const isDarkTheme = theme === 'dark' || (theme === 'system' && systemPrefersDark);
 
   useEffect(() => {
     if (!firebaseEnabled || !auth || !db) {
@@ -1271,7 +1294,7 @@ const App = () => {
             role: isBootstrapAdmin ? 'admin' : 'user',
             active: true,
             triageCount: 0,
-            theme: 'light',
+            theme: 'system',
             createdAt: now,
             updatedAt: now,
           };
@@ -1286,7 +1309,7 @@ const App = () => {
             role: data.role ?? (isBootstrapAdmin ? 'admin' : 'user'),
             active: data.active ?? true,
             triageCount: data.triageCount ?? 0,
-            theme: data.theme ?? 'light',
+            theme: parseTheme(data.theme),
             createdAt: data.createdAt ?? now,
             updatedAt: now,
           };
@@ -1361,7 +1384,7 @@ const App = () => {
             role,
             active: data.active ?? true,
             triageCount: data.triageCount ?? 0,
-            theme: data.theme ?? 'light',
+            theme: parseTheme(data.theme),
             createdAt: data.createdAt ?? '',
             updatedAt: data.updatedAt ?? '',
           };
@@ -1380,6 +1403,41 @@ const App = () => {
     );
     return () => unsub();
   }, [isAdmin]);
+
+  useEffect(() => {
+    if (!isAdmin || !db) {
+      setAdminRequests([]);
+      return;
+    }
+    const requestsQuery = query(
+      collection(db, ADMIN_REQUESTS_COLLECTION),
+      where('status', '==', 'pending')
+    );
+    const unsub = onSnapshot(
+      requestsQuery,
+      (snapshot) => {
+        const next = snapshot.docs.map((docSnap) => {
+          const data = docSnap.data() as Partial<AdminRequest>;
+          const status =
+            data.status === 'approved' || data.status === 'rejected' ? data.status : 'pending';
+          return {
+            id: docSnap.id,
+            uid: data.uid ?? docSnap.id,
+            email: data.email ?? '',
+            name: data.name ?? '',
+            status,
+            createdAt: data.createdAt,
+            updatedAt: data.updatedAt,
+          };
+        });
+        setAdminRequests(next);
+      },
+      (err) => {
+        setAdminNotice(formatAuthError(err));
+      }
+    );
+    return () => unsub();
+  }, [isAdmin, db]);
 
   useEffect(() => {
     if (!isAdmin) {
@@ -1407,9 +1465,44 @@ const App = () => {
   useEffect(() => {
     if (!profile) return;
     setProfileDraft({ name: profile.name ?? '', photoURL: profile.photoURL ?? '' });
-    setTheme(profile.theme ?? 'light');
+    const normalizedTheme = parseTheme(profile.theme);
+    const shouldMigrate = profile.theme !== 'system' && profile.theme !== 'dark';
+    const nextTheme: ThemeMode = shouldMigrate ? 'system' : normalizedTheme;
+    setTheme(nextTheme);
     setAdminRequestNotice('');
+    if (shouldMigrate && db && authUser) {
+      const now = new Date().toISOString();
+      updateDoc(doc(db, USERS_COLLECTION, authUser.uid), {
+        theme: 'system',
+        updatedAt: now,
+      })
+        .then(() => {
+          setProfile((prev) => (prev ? { ...prev, theme: 'system', updatedAt: now } : prev));
+        })
+        .catch(() => {
+          /* ignore */
+        });
+    }
   }, [profile?.uid]);
+
+  useEffect(() => {
+    if (!window.matchMedia) return;
+    const media = window.matchMedia('(prefers-color-scheme: dark)');
+    const updatePreference = () => setSystemPrefersDark(media.matches);
+    updatePreference();
+    if (media.addEventListener) {
+      media.addEventListener('change', updatePreference);
+    } else {
+      media.addListener(updatePreference);
+    }
+    return () => {
+      if (media.removeEventListener) {
+        media.removeEventListener('change', updatePreference);
+      } else {
+        media.removeListener(updatePreference);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (resendCooldown <= 0) return;
@@ -1429,14 +1522,14 @@ const App = () => {
 
   useEffect(() => {
     const root = document.documentElement;
-    root.classList.toggle('theme-dark', theme === 'dark');
+    root.classList.toggle('theme-dark', isDarkTheme);
     const key = authUser?.uid ? `triario_theme_${authUser.uid}` : 'triario_theme_anon';
     try {
       localStorage.setItem(key, theme);
     } catch {
       /* ignore */
     }
-  }, [theme, authUser?.uid]);
+  }, [theme, isDarkTheme, authUser?.uid]);
 
   const outputs = useMemo(() => computeOutputs(state), [state]);
   const summaryText = useMemo(() => buildResumoText(state, outputs), [state, outputs]);
@@ -1476,6 +1569,45 @@ const App = () => {
     sorted.sort((a, b) => (b.triageCount || 0) - (a.triageCount || 0));
     return sorted;
   }, [adminUsers]);
+  const pendingAdminRequests = useMemo(() => {
+    if (adminRequests.length === 0) return [];
+    const adminEmails = new Set(
+      adminUsers.filter((user) => user.role === 'admin').map((user) => normalizeEmail(user.email))
+    );
+    const adminUids = new Set(adminUsers.filter((user) => user.role === 'admin').map((user) => user.uid));
+    return adminRequests.filter((request) => {
+      if (adminUids.has(request.uid)) return false;
+      const email = normalizeEmail(request.email || '');
+      if (email && adminEmails.has(email)) return false;
+      return true;
+    });
+  }, [adminRequests, adminUsers]);
+  const adminRequestCount = pendingAdminRequests.length;
+
+  useEffect(() => {
+    if (!isAdmin || !db) return;
+    if (adminRequests.length === 0) return;
+    const adminEmails = new Set(
+      adminUsers.filter((user) => user.role === 'admin').map((user) => normalizeEmail(user.email))
+    );
+    const adminUids = new Set(adminUsers.filter((user) => user.role === 'admin').map((user) => user.uid));
+    const toApprove = adminRequests.filter((request) => {
+      if (autoApprovedRequestsRef.current.has(request.id)) return false;
+      if (adminUids.has(request.uid)) return true;
+      const email = normalizeEmail(request.email || '');
+      return email ? adminEmails.has(email) : false;
+    });
+    if (!toApprove.length) return;
+    toApprove.forEach((request) => {
+      autoApprovedRequestsRef.current.add(request.id);
+      updateDoc(doc(db, ADMIN_REQUESTS_COLLECTION, request.id), {
+        status: 'approved',
+        updatedAt: new Date().toISOString(),
+      }).catch(() => {
+        autoApprovedRequestsRef.current.delete(request.id);
+      });
+    });
+  }, [adminRequests, adminUsers, isAdmin, db]);
   const isPublicEntity = state.dispensa === 'sim';
   const valorFJValue = state.valorfj.trim();
   const valorFJNum = Number(valorFJValue || 0);
@@ -1747,7 +1879,7 @@ const App = () => {
     setAuthMessage('');
     try {
       await sendEmailVerification(authUser);
-      setResendCooldown(20);
+      setResendCooldown(15);
       setAuthMessage('E-mail de confirmação reenviado.');
     } catch (err) {
       setAuthError(formatAuthError(err));
@@ -1880,6 +2012,59 @@ const App = () => {
       setAdminNotice(formatAuthError(err));
     } finally {
       setAdminBusyUid(null);
+    }
+  };
+
+  const handleApproveAdminRequest = async (request: AdminRequest) => {
+    if (!db) return;
+    setAdminNotice('');
+    setAdminRequestBusyId(request.id);
+    try {
+      const now = new Date().toISOString();
+      const userRef = doc(db, USERS_COLLECTION, request.uid);
+      const userSnap = await getDoc(userRef);
+      if (userSnap.exists()) {
+        await updateDoc(userRef, { role: 'admin', updatedAt: now });
+      } else {
+        await setDoc(userRef, {
+          uid: request.uid,
+          email: request.email ?? '',
+          name: request.name ?? '',
+          photoURL: '',
+          role: 'admin',
+          active: true,
+          triageCount: 0,
+          theme: 'system',
+          createdAt: now,
+          updatedAt: now,
+        });
+      }
+      await updateDoc(doc(db, ADMIN_REQUESTS_COLLECTION, request.id), {
+        status: 'approved',
+        updatedAt: now,
+      });
+      setAdminNotice(`${request.email || 'Usuário'} aprovado como admin.`);
+    } catch (err) {
+      setAdminNotice(formatAuthError(err));
+    } finally {
+      setAdminRequestBusyId(null);
+    }
+  };
+
+  const handleRejectAdminRequest = async (request: AdminRequest) => {
+    if (!db) return;
+    setAdminNotice('');
+    setAdminRequestBusyId(request.id);
+    try {
+      await updateDoc(doc(db, ADMIN_REQUESTS_COLLECTION, request.id), {
+        status: 'rejected',
+        updatedAt: new Date().toISOString(),
+      });
+      setAdminNotice(`${request.email || 'Usuário'} rejeitado.`);
+    } catch (err) {
+      setAdminNotice(formatAuthError(err));
+    } finally {
+      setAdminRequestBusyId(null);
     }
   };
 
@@ -2397,20 +2582,20 @@ const App = () => {
                 />
               </InputLabel>
             </div>
-            <div className="flex flex-wrap items-center gap-4">
-              <label className="flex items-center gap-2 text-sm text-slate-700">
-                <input
-                  type="checkbox"
-                  className="h-4 w-4 rounded border-slate-300 accent-amber-500"
-                  checked={theme === 'dark'}
-                  onChange={(e) => handleThemeToggle(e.target.checked ? 'dark' : 'light')}
-                />
-                Modo escuro
-              </label>
+            <InputLabel label="Tema">
+              <select
+                className="input"
+                value={theme}
+                onChange={(e) => handleThemeToggle(e.target.value as ThemeMode)}
+              >
+                <option value="system">Sistema</option>
+                <option value="light">Modo claro</option>
+                <option value="dark">Modo escuro</option>
+              </select>
               <span className="text-xs text-slate-500">
                 Preferência salva neste dispositivo e no perfil.
               </span>
-            </div>
+            </InputLabel>
             <div className="flex flex-wrap items-center gap-2">
               <button
                 type="button"
@@ -2526,6 +2711,47 @@ const App = () => {
             )}
           </div>
         </SectionCard>
+        {adminRequestCount > 0 && (
+          <SectionCard title="Solicitações de admin">
+            <div className="grid gap-3">
+              <p className="text-xs text-slate-500">
+                Aprove ou rejeite as solicitações pendentes.
+              </p>
+              <Pill tone="warning">{adminRequestCount} solicitação(ões) pendente(s)</Pill>
+              <div className="grid gap-2">
+                {pendingAdminRequests.map((request) => (
+                  <div
+                    key={request.id}
+                    className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800"
+                  >
+                    <p className="font-semibold">
+                      {request.name || request.email || 'Usuário'}
+                    </p>
+                    <p className="text-[11px] text-amber-700">{request.email || request.uid}</p>
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => handleApproveAdminRequest(request)}
+                        disabled={adminRequestBusyId === request.id}
+                        className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border border-emerald-200 bg-emerald-600 text-white hover:bg-emerald-700 transition shadow-sm disabled:opacity-60"
+                      >
+                        {adminRequestBusyId === request.id ? 'Processando...' : 'Aprovar'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleRejectAdminRequest(request)}
+                        disabled={adminRequestBusyId === request.id}
+                        className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border border-rose-200 bg-rose-600 text-white hover:bg-rose-700 transition shadow-sm disabled:opacity-60"
+                      >
+                        {adminRequestBusyId === request.id ? 'Processando...' : 'Rejeitar'}
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </SectionCard>
+        )}
         <SectionCard title="Administração de usuários">
           <div className="grid gap-4">
             <div className="flex flex-wrap items-center gap-2">
@@ -3903,9 +4129,14 @@ const App = () => {
               {isAdmin && (
                 <button
                   onClick={() => setAdminOpen((open) => !open)}
-                  className="text-sm px-3 py-2 rounded-lg border border-slate-200 bg-white text-slate-800 hover:shadow-sm transition"
+                  className="text-sm px-3 py-2 rounded-lg border border-slate-200 bg-white text-slate-800 hover:shadow-sm transition inline-flex items-center"
                 >
                   {adminOpen ? 'Fechar admin' : 'Administração'}
+                  {adminRequestCount > 0 && (
+                    <span className="ml-2 inline-flex items-center justify-center rounded-full bg-rose-500 text-white text-[10px] px-2 py-0.5">
+                      {adminRequestCount}
+                    </span>
+                  )}
                 </button>
               )}
               <button
@@ -4145,6 +4376,9 @@ button:active {
   color: #e2e8f0;
   background: #0b1220;
 }
+.theme-dark {
+  color-scheme: dark;
+}
 .theme-dark .page-bg {
   background:
     radial-gradient(circle at 18% 16%, rgba(148, 163, 184, 0.12), transparent 36%),
@@ -4217,6 +4451,14 @@ button:active {
   color: #e2e8f0;
   box-shadow: inset 0 1px 0 rgba(15, 23, 42, 0.6);
 }
+.theme-dark select.input {
+  background-color: rgba(15, 23, 42, 0.85) !important;
+  color: #e2e8f0;
+}
+.theme-dark select.input option {
+  background-color: #0f172a;
+  color: #e2e8f0;
+}
 .theme-dark .input::placeholder {
   color: rgba(148, 163, 184, 0.8);
 }
@@ -4248,6 +4490,11 @@ button:active {
 }
 .theme-dark .border-slate-200 {
   border-color: rgba(148, 163, 184, 0.3) !important;
+}
+.theme-dark .border-white\\/80,
+.theme-dark .border-white\\/70,
+.theme-dark .border-white\\/60 {
+  border-color: rgba(148, 163, 184, 0.25) !important;
 }
 .theme-dark .border-amber-200 {
   border-color: rgba(251, 191, 36, 0.35) !important;

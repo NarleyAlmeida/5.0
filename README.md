@@ -76,6 +76,11 @@ service cloud.firestore {
           && canAccess()
           && request.resource.data.diff(resource.data).changedKeys().hasOnly(['name', 'photoURL', 'theme', 'triageCount', 'updatedAt']));
     }
+    match /adminRequests/{requestId} {
+      allow create: if request.auth != null && canAccess() && request.auth.uid == requestId;
+      allow read: if request.auth != null && canAccess() && (isAdmin() || request.auth.uid == requestId);
+      allow update: if request.auth != null && canAccess() && (isAdmin() || request.auth.uid == requestId);
+    }
   }
 }
 ```
