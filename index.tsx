@@ -1157,6 +1157,8 @@ const watermarkLines: React.ReactNode[] = [
   '',
   'Luís Gustavo Arruda Lançoni',
   '',
+  <span className="font-semibold">Narley Almeida de Sousa</span>,
+  '',
   'Rodrigo Louzano',
 ];
 
@@ -4093,6 +4095,26 @@ button:active {
     linear-gradient(180deg, #0b1220 0%, #0f172a 60%, #111827 100%);
   background-size: 200% 200%;
 }
+.theme-dark .bg-white,
+.theme-dark .bg-white\\/85,
+.theme-dark .bg-white\\/80,
+.theme-dark .bg-white\\/75,
+.theme-dark .bg-white\\/70 {
+  background-color: rgba(15, 23, 42, 0.85) !important;
+}
+.theme-dark .bg-slate-50,
+.theme-dark .bg-slate-100 {
+  background-color: rgba(30, 41, 59, 0.75) !important;
+}
+.theme-dark .bg-amber-50 {
+  background-color: rgba(120, 53, 15, 0.3) !important;
+}
+.theme-dark .bg-emerald-50 {
+  background-color: rgba(6, 95, 70, 0.3) !important;
+}
+.theme-dark .bg-rose-50 {
+  background-color: rgba(159, 18, 57, 0.28) !important;
+}
 .theme-dark .watermark {
   color: #f8fafc;
 }
@@ -4153,8 +4175,30 @@ button:active {
 .theme-dark .text-slate-500 {
   color: rgba(226, 232, 240, 0.75) !important;
 }
+.theme-dark .text-slate-400 {
+  color: rgba(226, 232, 240, 0.6) !important;
+}
+.theme-dark .text-amber-800,
+.theme-dark .text-amber-700 {
+  color: #fcd34d !important;
+}
+.theme-dark .text-emerald-700 {
+  color: #6ee7b7 !important;
+}
+.theme-dark .text-rose-700 {
+  color: #fda4af !important;
+}
 .theme-dark .border-slate-200 {
   border-color: rgba(148, 163, 184, 0.3) !important;
+}
+.theme-dark .border-amber-200 {
+  border-color: rgba(251, 191, 36, 0.35) !important;
+}
+.theme-dark .border-emerald-200 {
+  border-color: rgba(52, 211, 153, 0.3) !important;
+}
+.theme-dark .border-rose-200 {
+  border-color: rgba(251, 113, 133, 0.35) !important;
 }
 .input {
   width: 100%;
