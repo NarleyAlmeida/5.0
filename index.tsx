@@ -171,6 +171,7 @@ type LoadedState = { state: TriagemState; savedAt: Date | null };
 
 const STORAGE_KEY = 'triario_state_v2';
 const STORAGE_VERSION = 3;
+const STORAGE_TTL_MS = 1000 * 60 * 60 * 24 * 30;
 const USERS_COLLECTION = 'users';
 const ADMIN_REQUESTS_COLLECTION = 'adminRequests';
 const REMEMBER_KEY = 'triario_remember_login';
@@ -192,12 +193,6 @@ const db = firebaseApp ? getFirestore(firebaseApp) : null;
 if (auth) {
   auth.languageCode = 'pt-BR';
 }
-const parseAdminEmails = (value?: string) =>
-  value
-    ?.split(',')
-    .map((item) => item.trim().toLowerCase())
-    .filter(Boolean) ?? [];
-const bootstrapAdminEmails = parseAdminEmails(import.meta.env.VITE_ADMIN_EMAILS);
 const allowedEmailDomain = (import.meta.env.VITE_ALLOWED_EMAIL_DOMAIN ?? 'tjpr.jus.br')
   .trim()
   .toLowerCase();
@@ -369,6 +364,11 @@ const loadStoredState = (storageKey: string): LoadedState => {
     const raw = localStorage.getItem(storageKey);
     if (!raw) return { state: initialState, savedAt: null };
     const parsed = JSON.parse(raw) as Partial<StoredPayload & TriagemState>;
+    const savedAt = parseStoredDate((parsed as StoredPayload).savedAt);
+    if (savedAt && Date.now() - savedAt.getTime() > STORAGE_TTL_MS) {
+      localStorage.removeItem(storageKey);
+      return { state: initialState, savedAt: null };
+    }
     const stored = (parsed as StoredPayload).state || parsed;
     const merged: TriagemState = { ...initialState, ...(stored as Partial<TriagemState>) };
     if (!merged.parcialTipo && (stored as any)?.parcial) {
@@ -396,7 +396,6 @@ const loadStoredState = (storageKey: string): LoadedState => {
     }
     if (merged.usarIntegral === undefined) merged.usarIntegral = false;
     if (merged.consulta === '') merged.consulta = 'não';
-    const savedAt = parseStoredDate((parsed as StoredPayload).savedAt);
     return { state: merged, savedAt };
   } catch {
     return { state: initialState, savedAt: null };
@@ -1214,7 +1213,7 @@ const App = () => {
   const autoApprovedRequestsRef = useRef<Set<string>>(new Set());
   const verificationActionRef = useRef(false);
   const [profileOpen, setProfileOpen] = useState(false);
-  const [profileDraft, setProfileDraft] = useState({ name: '', photoURL: '' });
+  const [profileDraft, setProfileDraft] = useState({ name: '' });
   const [profileNotice, setProfileNotice] = useState('');
   const [profileBusy, setProfileBusy] = useState(false);
   const [adminRequestNotice, setAdminRequestNotice] = useState('');
@@ -1237,6 +1236,7 @@ const App = () => {
   >({});
   const [adminBusyUid, setAdminBusyUid] = useState<string | null>(null);
   const [adminNotice, setAdminNotice] = useState('');
+  const [photoCleanupBusy, setPhotoCleanupBusy] = useState(false);
   const [adminRequests, setAdminRequests] = useState<AdminRequest[]>([]);
   const [adminRequestBusyId, setAdminRequestBusyId] = useState<string | null>(null);
   const [deleteTargetUid, setDeleteTargetUid] = useState<string | null>(null);
@@ -1289,8 +1289,6 @@ const App = () => {
           }
           return;
         }
-        const normalized = normalizeEmail(email);
-        const isBootstrapAdmin = normalized ? bootstrapAdminEmails.includes(normalized) : false;
         const now = new Date().toISOString();
         const userRef = doc(db, USERS_COLLECTION, user.uid);
         const snap = await getDoc(userRef);
@@ -1301,7 +1299,7 @@ const App = () => {
             email,
             name: user.displayName || '',
             photoURL: user.photoURL || '',
-            role: isBootstrapAdmin ? 'admin' : 'user',
+            role: 'user',
             active: true,
             triageCount: 0,
             theme: 'system',
@@ -1316,7 +1314,7 @@ const App = () => {
             email: data.email ?? email,
             name: data.name ?? user.displayName ?? '',
             photoURL: data.photoURL ?? user.photoURL ?? '',
-            role: data.role ?? (isBootstrapAdmin ? 'admin' : 'user'),
+            role: data.role ?? 'user',
             active: data.active ?? true,
             triageCount: data.triageCount ?? 0,
             theme: parseTheme(data.theme),
@@ -1326,9 +1324,7 @@ const App = () => {
           const needsMerge =
             !data.email || !data.name || !data.role || data.active === undefined || !data.createdAt;
           if (needsMerge) {
-            if (isBootstrapAdmin) {
-              await setDoc(userRef, nextProfile, { merge: true });
-            } else if (!data.name && nextProfile.name) {
+            if (!data.name && nextProfile.name) {
               await updateDoc(userRef, { name: nextProfile.name, updatedAt: now });
             }
           }
@@ -1425,7 +1421,7 @@ const App = () => {
       (snapshot) => {
         const rawUsers = snapshot.docs.map((docSnap) => {
           const data = docSnap.data() as Partial<UserProfile>;
-          const role = data.role === 'admin' ? 'admin' : 'user';
+          const role: UserRole = data.role === 'admin' ? 'admin' : 'user';
           return {
             uid: docSnap.id,
             email: data.email ?? '',
@@ -1468,7 +1464,7 @@ const App = () => {
       (snapshot) => {
         const next = snapshot.docs.map((docSnap) => {
           const data = docSnap.data() as Partial<AdminRequest>;
-          const status =
+          const status: AdminRequest['status'] =
             data.status === 'approved' || data.status === 'rejected' ? data.status : 'pending';
           return {
             id: docSnap.id,
@@ -1514,20 +1510,20 @@ const App = () => {
 
   useEffect(() => {
     if (!profile) return;
-    setProfileDraft({ name: profile.name ?? '', photoURL: profile.photoURL ?? '' });
+    setProfileDraft({ name: profile.name ?? '' });
     const normalizedTheme = parseTheme(profile.theme);
-    const shouldMigrate = profile.theme !== 'system' && profile.theme !== 'dark';
-    const nextTheme: ThemeMode = shouldMigrate ? 'system' : normalizedTheme;
+    const shouldMigrate = normalizedTheme !== profile.theme;
+    const nextTheme: ThemeMode = normalizedTheme;
     setTheme(nextTheme);
     setAdminRequestNotice('');
     if (shouldMigrate && db && authUser) {
       const now = new Date().toISOString();
       updateDoc(doc(db, USERS_COLLECTION, authUser.uid), {
-        theme: 'system',
+        theme: normalizedTheme,
         updatedAt: now,
       })
         .then(() => {
-          setProfile((prev) => (prev ? { ...prev, theme: 'system', updatedAt: now } : prev));
+          setProfile((prev) => (prev ? { ...prev, theme: normalizedTheme, updatedAt: now } : prev));
         })
         .catch(() => {
           /* ignore */
@@ -1788,7 +1784,7 @@ const App = () => {
     const safeSigla = sanitizeFilename(state.sigla);
     a.download = `resumo-triagem-${safeSigla || 'triario'}.txt`;
     a.click();
-    URL.revokeObjectURL(url);
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 
   const copyText = async (text: string) => {
@@ -2013,9 +2009,9 @@ const App = () => {
 
   const handleSignOut = async () => {
     if (!auth) return;
+    const keyToClear = storageKey;
     await signOut(auth);
-    setState(initialState);
-    setStep(0);
+    clearStorage(keyToClear);
     setAdminOpen(false);
     setProfileOpen(false);
     setProfileNotice('');
@@ -2041,6 +2037,10 @@ const App = () => {
 
   const handleSaveUser = async (user: UserProfile) => {
     if (!db || !auth) return;
+    if (!isAdmin) {
+      setAdminNotice('Acesso restrito a admins.');
+      return;
+    }
     const draft = getAdminDraft(user);
     const isSelf = authUser?.uid === user.uid;
     const wasActiveAdmin = user.role === 'admin' && user.active;
@@ -2082,6 +2082,10 @@ const App = () => {
 
   const handleResetForUser = async (email: string) => {
     if (!auth) return;
+    if (!isAdmin) {
+      setAdminNotice('Acesso restrito a admins.');
+      return;
+    }
     setAdminNotice('');
     try {
       await sendPasswordResetEmail(auth, email);
@@ -2093,6 +2097,10 @@ const App = () => {
 
   const handleDemoteFromAdmin = async (user: UserProfile) => {
     if (!db) return;
+    if (!isAdmin) {
+      setAdminNotice('Acesso restrito a admins.');
+      return;
+    }
     const isSelf = authUser?.uid === user.uid;
     if (isSelf) {
       setAdminNotice('Você não pode remover seu próprio acesso de admin.');
@@ -2123,6 +2131,10 @@ const App = () => {
 
   const handleApproveAdminRequest = async (request: AdminRequest) => {
     if (!db) return;
+    if (!isAdmin) {
+      setAdminNotice('Acesso restrito a admins.');
+      return;
+    }
     setAdminNotice('');
     setAdminRequestBusyId(request.id);
     try {
@@ -2159,6 +2171,10 @@ const App = () => {
 
   const handleRejectAdminRequest = async (request: AdminRequest) => {
     if (!db) return;
+    if (!isAdmin) {
+      setAdminNotice('Acesso restrito a admins.');
+      return;
+    }
     setAdminNotice('');
     setAdminRequestBusyId(request.id);
     try {
@@ -2197,10 +2213,8 @@ const App = () => {
   const handleProfileSave = async () => {
     if (!auth || !authUser || !db || !profile) return;
     const name = profileDraft.name.trim();
-    const photoURL = profileDraft.photoURL.trim();
     const updates: Partial<UserProfile> = {};
     if (name !== profile.name) updates.name = name;
-    if (photoURL !== profile.photoURL) updates.photoURL = photoURL;
     if (Object.keys(updates).length === 0) {
       setProfileNotice('Nenhuma alteração para salvar.');
       return;
@@ -2210,7 +2224,6 @@ const App = () => {
     try {
       await updateProfile(authUser, {
         displayName: name || null,
-        photoURL: photoURL || null,
       });
       await updateDoc(doc(db, USERS_COLLECTION, authUser.uid), {
         ...updates,
@@ -2328,6 +2341,10 @@ const App = () => {
 
   const handlePromoteToAdmin = async (user: UserProfile) => {
     if (!db) return;
+    if (!isAdmin) {
+      setAdminNotice('Acesso restrito a admins.');
+      return;
+    }
     setAdminNotice('');
     setAdminBusyUid(user.uid);
     try {
@@ -2361,6 +2378,10 @@ const App = () => {
 
   const handleDeleteUser = async (user: UserProfile) => {
     if (!auth || !authUser || !db) return;
+    if (!isAdmin) {
+      setDeleteError('Ação restrita a admins.');
+      return;
+    }
     if (authUser.uid === user.uid) {
       setDeleteError('Não é possível desativar o próprio usuário.');
       return;
@@ -2398,6 +2419,37 @@ const App = () => {
     }
   };
 
+  const handleClearProfilePhotos = async () => {
+    if (!db) return;
+    if (!isAdmin) {
+      setAdminNotice('Acesso restrito a admins.');
+      return;
+    }
+    const withPhoto = adminUsers.filter((user) => user.photoURL?.trim());
+    if (withPhoto.length === 0) {
+      setAdminNotice('Nenhuma foto de perfil para remover.');
+      return;
+    }
+    if (!window.confirm(`Isso vai remover ${withPhoto.length} foto(s) de perfil. Continuar?`)) {
+      return;
+    }
+    setPhotoCleanupBusy(true);
+    setAdminNotice('');
+    try {
+      for (const user of withPhoto) {
+        await updateDoc(doc(db, USERS_COLLECTION, user.uid), {
+          photoURL: '',
+          updatedAt: new Date().toISOString(),
+        });
+      }
+      setAdminNotice('Fotos de perfil removidas.');
+    } catch (err) {
+      setAdminNotice(formatAuthError(err));
+    } finally {
+      setPhotoCleanupBusy(false);
+    }
+  };
+
   const handleAuthSubmit = (event: React.FormEvent) => {
     event.preventDefault();
     if (authMode === 'login') {
@@ -2411,9 +2463,9 @@ const App = () => {
 
   const next = () => setStep((s) => Math.min(steps.length - 1, s + 1));
   const prev = () => setStep((s) => Math.max(0, s - 1));
-  const clearStorage = () => {
+  const clearStorage = (targetKey = storageKey) => {
     try {
-      localStorage.removeItem(storageKey);
+      localStorage.removeItem(targetKey);
     } catch {
       /* ignore */
     }
@@ -2650,17 +2702,9 @@ const App = () => {
           <div className="grid gap-4">
             <div className="flex flex-wrap items-center gap-4">
               <div className="avatar-surface h-16 w-16 rounded-2xl border border-slate-200 bg-white/80 flex items-center justify-center overflow-hidden">
-                {profileDraft.photoURL ? (
-                  <img
-                    src={profileDraft.photoURL}
-                    alt="Foto de perfil"
-                    className="h-full w-full object-cover"
-                  />
-                ) : (
-                  <span className="text-lg font-semibold text-slate-700">
-                    {getInitials(displayName)}
-                  </span>
-                )}
+                <span className="text-lg font-semibold text-slate-700">
+                  {getInitials(displayName)}
+                </span>
               </div>
               <div className="space-y-1">
                 <p className="text-sm font-semibold text-slate-900">{displayName}</p>
@@ -2684,16 +2728,6 @@ const App = () => {
                   className="input"
                   value={profileDraft.name}
                   onChange={(e) => setProfileDraft((prev) => ({ ...prev, name: e.target.value }))}
-                />
-              </InputLabel>
-              <InputLabel label="Foto de perfil (URL)">
-                <input
-                  className="input"
-                  placeholder="https://..."
-                  value={profileDraft.photoURL}
-                  onChange={(e) =>
-                    setProfileDraft((prev) => ({ ...prev, photoURL: e.target.value }))
-                  }
                 />
               </InputLabel>
             </div>
@@ -2726,15 +2760,6 @@ const App = () => {
                 className="inline-flex items-center gap-2 px-4 py-2 rounded-lg border border-slate-200 bg-white text-slate-800 hover:shadow-sm transition"
               >
                 Enviar reset de senha
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setProfileDraft((prev) => ({ ...prev, photoURL: '' }));
-                }}
-                className="inline-flex items-center gap-2 px-4 py-2 rounded-lg border border-slate-200 bg-white text-slate-800 hover:shadow-sm transition"
-              >
-                Remover foto
               </button>
               {!isAdmin && (
                 <button
@@ -2877,6 +2902,14 @@ const App = () => {
               />
               <Pill>{adminUsers.length} usuário(s)</Pill>
               <Pill tone="success">{activeAdminCount} admin(s) ativos</Pill>
+              <button
+                type="button"
+                onClick={handleClearProfilePhotos}
+                disabled={photoCleanupBusy}
+                className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100 transition shadow-sm disabled:opacity-60"
+              >
+                {photoCleanupBusy ? 'Limpando fotos...' : 'Remover fotos de perfil'}
+              </button>
             </div>
             {adminNotice && (
               <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-700">
@@ -4231,13 +4264,9 @@ const App = () => {
                 <Pill>{savedLabel}</Pill>
                 <div className="user-chip flex items-center gap-2 rounded-full border border-slate-200 bg-white/80 px-3 py-1 shadow-sm">
                   <div className="avatar-surface h-6 w-6 rounded-full overflow-hidden border border-slate-200 bg-white flex items-center justify-center">
-                    {profile.photoURL ? (
-                      <img src={profile.photoURL} alt="Perfil" className="h-full w-full object-cover" />
-                    ) : (
-                      <span className="text-[10px] font-semibold text-slate-600">
-                        {getInitials(profile.name || profile.email)}
-                      </span>
-                    )}
+                    <span className="text-[10px] font-semibold text-slate-600">
+                      {getInitials(profile.name || profile.email)}
+                    </span>
                   </div>
                   <span className="text-xs font-semibold text-slate-700">
                     {profile.name || profile.email}

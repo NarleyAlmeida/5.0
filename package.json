@@ -8,6 +8,7 @@
     "build": "vite build",
     "postbuild": "cp docs/index.html docs/404.html",
     "preview": "vite preview",
+    "test": "tsc --noEmit",
     "deploy:gh": "npm run build && gh-pages -d docs -b gh-pages"
   },
   "dependencies": {
@@ -19,6 +20,8 @@
   },
   "devDependencies": {
     "@types/node": "^22.14.0",
+    "@types/react": "^19.2.9",
+    "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.0.0",
     "gh-pages": "^6.2.0",
     "typescript": "~5.8.2",
