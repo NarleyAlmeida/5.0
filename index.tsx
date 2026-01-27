@@ -767,9 +767,26 @@ const buildResumoData = (state: TriagemState, outputs: Outputs) => {
   return { headerLeft, headerRight, rows };
 };
 
+const getResumoTableHeader = (state: TriagemState): string[] => {
+  if (state.dispensa === 'sim') {
+    return ['TABELA PARA ESTADO, MP, INSS (ÓRGÃOS PÚBLICOS)', 'TABELA NORMAL'];
+  }
+  const gratuidade = state.gratuidade ?? '';
+  const isJG =
+    gratuidade === 'presumida (defensor público, dativo ou NPJ)' ||
+    gratuidade === 'já é ou afirma ser beneficiário' ||
+    gratuidade === 'requer no recurso em análise' ||
+    gratuidade === 'é o próprio objeto do recurso';
+  if (isJG) return ['TABELA JG'];
+  return ['TABELA NORMAL'];
+};
+
 const buildResumoText = (state: TriagemState, outputs: Outputs) => {
   const { headerLeft, headerRight, rows } = buildResumoData(state, outputs);
   const lines: string[] = [];
+  const tableHeader = getResumoTableHeader(state);
+  tableHeader.forEach((h) => lines.push(h));
+  if (tableHeader.length) lines.push('');
   if (headerLeft) lines.push(headerLeft);
   if (headerRight) lines.push(headerRight);
   lines.push('');
