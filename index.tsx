@@ -10,6 +10,12 @@ import {
   Calendar,
   ShieldAlert,
   ArrowRight,
+  BarChart2,
+  TrendingUp,
+  Award,
+  Target,
+  X,
+  User as UserIcon,
 } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import {
@@ -1571,6 +1577,8 @@ const App = () => {
   const [deletePassword, setDeletePassword] = useState('');
   const [deleteError, setDeleteError] = useState('');
   const [deleteBusyUid, setDeleteBusyUid] = useState<string | null>(null);
+  const [performanceOpen, setPerformanceOpen] = useState(false);
+  const [adminSelectedUser, setAdminSelectedUser] = useState<UserProfile | null>(null);
   const mainRef = useRef<HTMLElement | null>(null);
   const isAdmin = profile?.role === 'admin';
   const authEmailValue = authEmailLocal
@@ -2121,6 +2129,12 @@ const App = () => {
   useEffect(() => {
     const main = mainRef.current;
     if (!main) return;
+    // Evita “travamentos” de scroll: só ajusta se o conteúdo principal
+    // não estiver totalmente visível na viewport.
+    const rect = main.getBoundingClientRect();
+    const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
+    const fullyVisible = rect.top >= 0 && rect.bottom <= viewportHeight;
+    if (fullyVisible) return;
     const prefersReducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
     main.scrollIntoView({ behavior: prefersReducedMotion ? 'auto' : 'smooth', block: 'start' });
   }, [step]);
@@ -2801,6 +2815,53 @@ const App = () => {
     }
   };
 
+  const handleExportUsersCsv = () => {
+    if (adminUsers.length === 0) {
+      setAdminNotice('Não há usuários para exportar.');
+      return;
+    }
+    const headers = [
+      'uid',
+      'email',
+      'nome',
+      'perfil',
+      'ativo',
+      'triagens',
+      'tema',
+      'criadoEm',
+      'atualizadoEm',
+    ];
+    const rows = adminUsers.map((user) => [
+      user.uid,
+      user.email,
+      user.name,
+      user.role,
+      user.active ? 'ativo' : 'inativo',
+      String(user.triageCount ?? 0),
+      user.theme,
+      user.createdAt,
+      user.updatedAt,
+    ]);
+    const csv = [headers, ...rows]
+      .map((cols) =>
+        cols
+          .map((value) => {
+            const safe = (value ?? '').toString().replace(/"/g, '""');
+            return `"${safe}"`;
+          })
+          .join(';')
+      )
+      .join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'usuarios-triario.csv';
+    a.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    setAdminNotice('Exportação de usuários iniciada (CSV baixado).');
+  };
+
   const handleAuthSubmit = (event: React.FormEvent) => {
     event.preventDefault();
     if (authMode === 'login') {
@@ -3178,34 +3239,300 @@ const App = () => {
     );
   };
 
+  const renderPerformancePanel = () => {
+    if (!performanceOpen || !profile) return null;
+    const total = profile.triageCount || 0;
+    const milestones = [1, 5, 10, 25, 50, 100, 250, 500];
+    const nextMilestone = milestones.find((m) => m > total) ?? null;
+    const completedCount = milestones.filter((m) => m <= total).length;
+    const progressToNext = nextMilestone != null ? Math.min(100, (total / nextMilestone) * 100) : 100;
+    const motivacional =
+      total === 0
+        ? 'Complete sua primeira triagem para começar a acompanhar seu desempenho.'
+        : total < 5
+          ? 'Você está no início. Cada triagem conta!'
+          : total < 25
+            ? 'Bom ritmo! Continue assim.'
+            : total < 100
+              ? 'Excelente produtividade.'
+              : 'Desempenho destacado. Parabéns!';
+    return (
+      <div className="mb-6">
+        <SectionCard title="Meu desempenho">
+          <div className="grid gap-8">
+            {/* Hero: número principal em destaque */}
+            <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 px-6 py-8 text-white shadow-xl">
+              <div className="absolute inset-0 bg-[radial-gradient(ellipse_80%_50%_at_50%_-20%,rgba(251,191,36,0.25),transparent)]" />
+              <div className="relative flex flex-wrap items-center justify-between gap-6">
+                <div className="flex items-center gap-4">
+                  <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-white/10 backdrop-blur">
+                    <BarChart2 className="h-9 w-9 text-amber-300" />
+                  </div>
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-widest text-slate-400">
+                      Total de triagens realizadas
+                    </p>
+                    <p className="text-5xl font-bold tabular-nums tracking-tight text-white drop-shadow-sm">
+                      {total}
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 rounded-xl bg-emerald-500/20 px-4 py-3 border border-emerald-400/30">
+                  <TrendingUp className="h-6 w-6 text-emerald-300" />
+                  <div>
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-emerald-200">
+                      Marcos
+                    </p>
+                    <p className="text-2xl font-bold tabular-nums text-white">
+                      {completedCount}<span className="text-slate-400 font-normal">/{milestones.length}</span>
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Frase motivacional */}
+            <div className="rounded-xl border-l-4 border-amber-400 bg-amber-50/80 px-4 py-3">
+              <p className="text-sm text-slate-700 italic">&ldquo;{motivacional}&rdquo;</p>
+            </div>
+
+            {/* Marcos em grid visual */}
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-3">
+                Marcos de triagens
+              </p>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                {milestones.map((m) => {
+                  const done = total >= m;
+                  return (
+                    <div
+                      key={m}
+                      className={`flex items-center gap-3 rounded-xl border-2 px-4 py-3 text-sm transition-all ${
+                        done
+                          ? 'border-emerald-300 bg-emerald-50 text-emerald-800 shadow-sm shadow-emerald-100'
+                          : 'border-slate-200 bg-slate-50/60 text-slate-500'
+                      }`}
+                    >
+                      {done ? (
+                        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-emerald-500 text-white">
+                          <CheckCircle2 className="h-5 w-5" />
+                        </div>
+                      ) : (
+                        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-slate-200">
+                          <Target className="h-4 w-4 text-slate-500" />
+                        </div>
+                      )}
+                      <span className="font-bold tabular-nums">{m}</span>
+                      <span className="text-xs opacity-80">{m === 1 ? 'triagem' : 'triagens'}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Próximo marco com barra grande */}
+            {nextMilestone != null && (
+              <div className="rounded-2xl border-2 border-amber-200 bg-gradient-to-br from-amber-50 to-amber-100/80 p-5 shadow-sm">
+                <div className="flex items-center gap-3 mb-4">
+                  <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-amber-400 text-white">
+                    <Award className="h-6 w-6" />
+                  </div>
+                  <div>
+                    <p className="text-sm font-bold text-amber-900">Próximo marco: {nextMilestone} triagens</p>
+                    <p className="text-xs text-amber-700">
+                      Faltam <strong>{nextMilestone - total}</strong> triagem{(nextMilestone - total) !== 1 ? 's' : ''}
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-3">
+                  <div className="flex-1 h-4 bg-amber-200/80 rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-gradient-to-r from-amber-400 to-amber-500 rounded-full transition-all duration-500"
+                      style={{ width: `${progressToNext}%` }}
+                    />
+                  </div>
+                  <span className="text-sm font-bold text-amber-800 tabular-nums w-12 text-right">
+                    {Math.round(progressToNext)}%
+                  </span>
+                </div>
+              </div>
+            )}
+          </div>
+        </SectionCard>
+      </div>
+    );
+  };
+
   const renderAdminPanel = () => {
     if (!isAdmin || !adminOpen) return null;
+    const maxTriageCount = Math.max(1, ...triageLeaderboard.map((u) => u.triageCount || 0));
+    const avgTriages = adminUsers.length > 0 ? Math.round((totalTriages / adminUsers.length) * 10) / 10 : 0;
+    const leader = triageLeaderboard[0];
+    const getRank = (uid: string) => {
+      const idx = triageLeaderboard.findIndex((u) => u.uid === uid);
+      return idx >= 0 ? idx + 1 : null;
+    };
+    const getShare = (count: number) =>
+      totalTriages > 0 ? Math.round((count / totalTriages) * 1000) / 10 : 0;
+
     return (
       <div className="mb-6 space-y-4">
+        {adminSelectedUser && (
+          <div className="relative rounded-3xl border-2 border-slate-200 bg-white shadow-xl overflow-hidden">
+            <div className="absolute inset-x-0 top-0 h-1.5 bg-gradient-to-r from-slate-900 via-amber-500 to-teal-500" />
+            <div className="p-6 lg:p-8">
+              <div className="flex flex-wrap items-start justify-between gap-4 mb-6">
+                <div className="flex items-center gap-4">
+                  <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-slate-800 to-slate-900 text-white shadow-lg">
+                    <UserIcon className="h-7 w-7" />
+                  </div>
+                  <div>
+                    <h3 className="text-xl font-bold text-slate-900">
+                      {adminSelectedUser.name || adminSelectedUser.email || 'Usuário'}
+                    </h3>
+                    <p className="text-sm text-slate-500 truncate max-w-[320px]">{adminSelectedUser.email}</p>
+                    <p className="mt-1 text-xs font-medium text-slate-400">
+                      {adminSelectedUser.active ? 'Ativo' : 'Inativo'} · {adminSelectedUser.role === 'admin' ? 'Admin' : 'Usuário'}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setAdminSelectedUser(null)}
+                  className="p-2.5 rounded-xl border border-slate-200 text-slate-600 hover:bg-slate-100 hover:border-slate-300 transition"
+                  aria-label="Fechar"
+                >
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                <div className="rounded-xl border-2 border-slate-200 bg-slate-50 px-5 py-4 shadow-sm">
+                  <p className="text-[10px] uppercase tracking-wider font-semibold text-slate-500">Triagens</p>
+                  <p className="text-3xl font-bold text-slate-900 tabular-nums mt-0.5">{adminSelectedUser.triageCount ?? 0}</p>
+                </div>
+                <div className="rounded-xl border-2 border-amber-200 bg-amber-50/80 px-5 py-4 shadow-sm">
+                  <p className="text-[10px] uppercase tracking-wider font-semibold text-amber-700">Posição</p>
+                  <p className="text-3xl font-bold text-amber-900 tabular-nums mt-0.5">
+                    {getRank(adminSelectedUser.uid) != null ? `#${getRank(adminSelectedUser.uid)}` : '—'}
+                  </p>
+                </div>
+                <div className="rounded-xl border-2 border-teal-200 bg-teal-50/80 px-5 py-4 shadow-sm">
+                  <p className="text-[10px] uppercase tracking-wider font-semibold text-teal-700">% do total</p>
+                  <p className="text-3xl font-bold text-teal-900 tabular-nums mt-0.5">{getShare(adminSelectedUser.triageCount ?? 0)}%</p>
+                </div>
+                <div className="rounded-xl border-2 border-emerald-200 bg-emerald-50/80 px-5 py-4 shadow-sm">
+                  <p className="text-[10px] uppercase tracking-wider font-semibold text-emerald-700">Status</p>
+                  <p className="text-base font-bold text-emerald-900 mt-0.5">
+                    {adminSelectedUser.active ? 'Ativo' : 'Inativo'}
+                    <span className="text-slate-500 font-normal"> · </span>
+                    {adminSelectedUser.role === 'admin' ? 'Admin' : 'Usuário'}
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
         <SectionCard title="Dashboard de triagens">
-          <div className="grid gap-4">
+          <div className="grid gap-8">
+            {/* KPIs em destaque */}
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+              <div className="rounded-2xl border-2 border-slate-200 bg-gradient-to-br from-slate-50 to-white px-5 py-4 shadow-sm flex items-center gap-4">
+                <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-slate-900 text-white">
+                  <BarChart2 className="h-6 w-6" />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-[10px] uppercase tracking-wider font-semibold text-slate-500">Total de triagens</p>
+                  <p className="text-2xl font-bold text-slate-900 tabular-nums">{totalTriages}</p>
+                </div>
+              </div>
+              <div className="rounded-2xl border-2 border-slate-200 bg-gradient-to-br from-slate-50 to-white px-5 py-4 shadow-sm flex items-center gap-4">
+                <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-slate-700 text-white">
+                  <UserIcon className="h-6 w-6" />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-[10px] uppercase tracking-wider font-semibold text-slate-500">Usuários</p>
+                  <p className="text-2xl font-bold text-slate-900 tabular-nums">{adminUsers.length}</p>
+                </div>
+              </div>
+              <div className="rounded-2xl border-2 border-amber-200 bg-gradient-to-br from-amber-50 to-white px-5 py-4 shadow-sm flex items-center gap-4">
+                <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-amber-500 text-white">
+                  <Target className="h-6 w-6" />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-[10px] uppercase tracking-wider font-semibold text-amber-700">Média por usuário</p>
+                  <p className="text-2xl font-bold text-amber-900 tabular-nums">{avgTriages}</p>
+                </div>
+              </div>
+              <div className="rounded-2xl border-2 border-amber-300 bg-gradient-to-br from-amber-50 to-amber-100/80 px-5 py-4 shadow-sm flex items-center gap-4">
+                <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-amber-600 text-white">
+                  <Award className="h-6 w-6" />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-[10px] uppercase tracking-wider font-semibold text-amber-800">Líder</p>
+                  <p className="text-base font-bold text-amber-900 truncate">{leader ? (leader.name || leader.email || '—') : '—'}</p>
+                  <p className="text-sm font-semibold text-amber-700 tabular-nums">{leader ? `${leader.triageCount ?? 0} triagens` : '—'}</p>
+                </div>
+              </div>
+            </div>
             <div className="flex flex-wrap items-center gap-2">
               <Pill>{totalTriages} triagem(ns) registradas</Pill>
               <Pill>{adminUsers.length} usuário(s)</Pill>
             </div>
             {triageLeaderboard.length === 0 ? (
-              <p className="text-sm text-slate-600">Nenhuma triagem registrada.</p>
+              <p className="text-sm text-slate-600 py-4">Nenhuma triagem registrada.</p>
             ) : (
-              <div className="grid gap-2 md:grid-cols-2">
-                {triageLeaderboard.map((user) => (
-                  <div
-                    key={user.uid}
-                    className="flex items-center justify-between rounded-xl border border-slate-200 bg-white/80 px-4 py-3 text-sm text-slate-700"
-                  >
-                    <div className="min-w-0">
-                      <p className="font-semibold text-slate-900 truncate">
-                        {user.name || user.email || 'Sem nome'}
-                      </p>
-                      <p className="text-xs text-slate-500 truncate">{user.email}</p>
-                    </div>
-                    <span className="font-semibold">{user.triageCount || 0}</span>
-                  </div>
-                ))}
+              <div className="space-y-4">
+                <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Ranking de triagens</p>
+                <div className="grid gap-3 md:grid-cols-2">
+                  {triageLeaderboard.map((user, idx) => {
+                    const rank = idx + 1;
+                    const count = user.triageCount || 0;
+                    const pct = maxTriageCount > 0 ? (count / maxTriageCount) * 100 : 0;
+                    const share = totalTriages > 0 ? ((count / totalTriages) * 100).toFixed(1) : '0';
+                    const isSelected = adminSelectedUser?.uid === user.uid;
+                    const rankStyle = rank === 1 ? 'bg-amber-400 text-amber-900' : rank === 2 ? 'bg-slate-300 text-slate-800' : rank === 3 ? 'bg-amber-200 text-amber-900' : 'bg-slate-100 text-slate-700';
+                    return (
+                      <div
+                        key={user.uid}
+                        className={`flex items-center gap-4 rounded-2xl border-2 px-5 py-4 text-sm transition shadow-sm ${
+                          isSelected ? 'border-slate-900 bg-slate-50 ring-2 ring-slate-900/30 shadow-md' : 'border-slate-200 bg-white hover:border-slate-300 hover:shadow'
+                        }`}
+                      >
+                        <span className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl font-bold text-sm ${rankStyle}`}>
+                          {rank === 1 ? '1º' : rank === 2 ? '2º' : rank === 3 ? '3º' : `${rank}º`}
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center justify-between gap-2 mb-2">
+                            <p className="font-semibold text-slate-900 truncate">
+                              {user.name || user.email || 'Sem nome'}
+                            </p>
+                            <span className="font-bold text-slate-900 tabular-nums shrink-0">{count} <span className="text-xs font-normal text-slate-500">triagens</span></span>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <div className="flex-1 h-2.5 rounded-full bg-slate-200 overflow-hidden">
+                              <div
+                                className="h-full rounded-full bg-gradient-to-r from-slate-600 to-teal-500 transition-all duration-300"
+                                style={{ width: `${pct}%` }}
+                              />
+                            </div>
+                            <span className="text-xs font-semibold text-slate-600 tabular-nums w-10 text-right">{share}%</span>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setAdminSelectedUser(isSelected ? null : user)}
+                          className={`shrink-0 px-4 py-2 rounded-xl border-2 text-xs font-semibold transition ${
+                            isSelected
+                              ? 'border-slate-700 bg-slate-700 text-white hover:bg-slate-800'
+                              : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-100'
+                          }`}
+                        >
+                          {isSelected ? 'Fechar' : 'Ver desempenho'}
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
             )}
           </div>
@@ -3264,6 +3591,14 @@ const App = () => {
               <Pill tone="success">{activeAdminCount} admin(s) ativos</Pill>
               <button
                 type="button"
+                onClick={handleExportUsersCsv}
+                disabled={adminUsers.length === 0}
+                className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-slate-200 bg-white text-slate-800 hover:shadow-sm transition disabled:opacity-60"
+              >
+                Exportar CSV
+              </button>
+              <button
+                type="button"
                 onClick={handleClearProfilePhotos}
                 disabled={photoCleanupBusy}
                 className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100 transition shadow-sm disabled:opacity-60"
@@ -3301,7 +3636,16 @@ const App = () => {
                             {user.name || 'Sem nome'}
                           </p>
                           <p className="text-xs text-slate-500">{user.email || 'E-mail não informado'}</p>
-                          <p className="text-xs text-slate-500">Triagens: {user.triageCount || 0}</p>
+                          <div className="flex items-center gap-2 mt-1">
+                            <span className="text-xs text-slate-500">Triagens: <strong className="text-slate-700">{user.triageCount || 0}</strong></span>
+                            <button
+                              type="button"
+                              onClick={() => setAdminSelectedUser(adminSelectedUser?.uid === user.uid ? null : user)}
+                              className="text-xs px-2 py-1 rounded border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 font-medium transition"
+                            >
+                              {adminSelectedUser?.uid === user.uid ? 'Fechar desempenho' : 'Ver desempenho'}
+                            </button>
+                          </div>
                         </div>
                         <div className="flex items-center gap-2">
                           {isSelf && <Pill>Você</Pill>}
@@ -4476,14 +4820,35 @@ const App = () => {
                 {isAdmin && <Pill tone="success">Admin</Pill>}
               </div>
               <button
-                onClick={() => setProfileOpen((open) => !open)}
+                onClick={() => {
+                  setProfileOpen(false);
+                  setAdminOpen(false);
+                  setPerformanceOpen((open) => !open);
+                }}
+                className="text-sm px-3 py-2 rounded-lg border-2 border-amber-400 bg-amber-50 text-amber-900 hover:bg-amber-100 hover:border-amber-500 transition font-semibold inline-flex items-center gap-1.5 shadow-sm"
+                title="Ver seu desempenho de triagens"
+              >
+                <BarChart2 className="w-4 h-4" />
+                {performanceOpen ? 'Fechar dashboard' : 'Dashboard'}
+              </button>
+              <button
+                onClick={() => {
+                  setPerformanceOpen(false);
+                  setAdminOpen(false);
+                  setProfileOpen((open) => !open);
+                }}
                 className="text-sm px-3 py-2 rounded-lg border border-slate-200 bg-white text-slate-800 hover:shadow-sm transition"
               >
                 {profileOpen ? 'Fechar perfil' : 'Perfil'}
               </button>
               {isAdmin && (
                 <button
-                  onClick={() => setAdminOpen((open) => !open)}
+                  onClick={() => {
+                    setPerformanceOpen(false);
+                    setProfileOpen(false);
+                    setAdminSelectedUser(null);
+                    setAdminOpen((open) => !open);
+                  }}
                   className="text-sm px-3 py-2 rounded-lg border border-slate-200 bg-white text-slate-800 hover:shadow-sm transition inline-flex items-center"
                 >
                   {adminOpen ? 'Fechar admin' : 'Administração'}
@@ -4526,6 +4891,18 @@ const App = () => {
               Etapa {step + 1} de {steps.length}: {steps[step].label}
             </p>
             <div className="mt-3 flex flex-wrap items-center gap-2 md:hidden">
+              <button
+                type="button"
+                onClick={() => {
+                  setProfileOpen(false);
+                  setAdminOpen(false);
+                  setPerformanceOpen((o) => !o);
+                }}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border-2 border-amber-400 bg-amber-50 text-amber-900 text-xs font-semibold shadow-sm"
+              >
+                <BarChart2 className="w-3.5 h-3.5" />
+                {performanceOpen ? 'Fechar dashboard' : 'Dashboard'}
+              </button>
               <Pill>{savedLabel}</Pill>
               <Pill>{profile.name || profile.email}</Pill>
               <Pill>Triagens: {profile.triageCount || 0}</Pill>
@@ -4547,6 +4924,7 @@ const App = () => {
 
         <main ref={mainRef} className="max-w-7xl mx-auto px-4 py-8">
           {renderProfilePanel()}
+          {renderPerformancePanel()}
           {renderAdminPanel()}
           <div className="grid lg:grid-cols-[2fr_1fr] gap-5 items-start">
             <div className="space-y-4">

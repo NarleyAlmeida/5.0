@@ -1,7 +1,8 @@
 {
-  "name": "app",
+  "name": "triario",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
+  "description": "Sistema de triagem recursal para admissibilidade de recursos (TJPR)",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -10,6 +11,9 @@
     "preview": "vite preview",
     "test": "tsc --noEmit",
     "deploy:gh": "npm run build && gh-pages -d docs -b gh-pages"
+  },
+  "engines": {
+    "node": ">=18"
   },
   "dependencies": {
     "@google/genai": "^1.33.0",
